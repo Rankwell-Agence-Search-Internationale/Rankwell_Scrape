@@ -4,18 +4,20 @@
  * CLI Script for RocketLinks Scraping
  *
  * Usage:
- *   npm run scrape:rocketlinks                        # Scrape ALL categories with price ranges (default)
- *   npm run scrape:rocketlinks -- --date 2026-01-14   # Scrape by date (no price ranges)
- *   npm run scrape:rocketlinks -- --single            # Scrape single category (default: sw_adult)
- *   npm run scrape:rocketlinks -- --category sw_adult # Scrape specific category (implies --single)
- *   npm run scrape:rocketlinks -- --login             # Just test login
- *   npm run scrape:rocketlinks -- --no-api            # Don't send to database
+ *   npm run scrape:rocketlinks                                    # Scrape ALL categories with price ranges (default)
+ *   npm run scrape:rocketlinks -- --start-from g_arts_entertainment  # Resume from a specific category
+ *   npm run scrape:rocketlinks -- --date 2026-01-14               # Scrape by date (no price ranges)
+ *   npm run scrape:rocketlinks -- --single                        # Scrape single category (default: sw_adult)
+ *   npm run scrape:rocketlinks -- --category sw_adult             # Scrape specific category (implies --single)
+ *   npm run scrape:rocketlinks -- --login                         # Just test login
+ *   npm run scrape:rocketlinks -- --no-api                        # Don't send to database
  */
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { RocketLinksScraperService } from '../modules/rocketlinks/services/rocketlinks-scraper.service';
 import { LightpandaService } from '../common/lightpanda.service';
+import { ROCKETLINKS_CATEGORIES } from '../config/rocketlinks-categories.config';
 
 async function main() {
   console.log('\n' + '='.repeat(60));
@@ -37,6 +39,12 @@ async function main() {
     ? args[dateIndex + 1]
     : null;
 
+  // Get start-from category (--start-from g_arts_entertainment)
+  const startFromIndex = args.indexOf('--start-from');
+  const startFrom = startFromIndex !== -1 && args[startFromIndex + 1]
+    ? args[startFromIndex + 1]
+    : null;
+
   // If --category is specified, it implies single mode
   const hasCategoryFlag = categoryIndex !== -1;
 
@@ -46,12 +54,14 @@ async function main() {
     sendToAPI: !args.includes('--no-api'),
     category,
     dateFilter, // If set, use date filter instead of price ranges
+    startFrom,
   };
 
   console.log('Options:');
   console.log(`  - Login only: ${options.loginOnly}`);
   console.log(`  - Scrape all categories: ${options.scrapeAll}`);
   console.log(`  - Category: ${options.scrapeAll ? 'ALL' : options.category}`);
+  console.log(`  - Start from: ${options.startFrom || 'beginning'}`);
   console.log(`  - Date filter: ${options.dateFilter || 'none (using price ranges)'}`);
   console.log(`  - Send to API: ${options.sendToAPI}`);
   console.log('');
@@ -85,17 +95,35 @@ async function main() {
 
       // Step 2: Scrape categories
       if (options.scrapeAll) {
-        // Scrape ALL categories
+        // Filter categories if --start-from is set
+        let categoriesToScrape = ROCKETLINKS_CATEGORIES;
+
+        if (options.startFrom) {
+          const startIdx = categoriesToScrape.findIndex(c => c.id === options.startFrom);
+          if (startIdx === -1) {
+            console.error(`\nError: Category '${options.startFrom}' not found.`);
+            console.error('Available categories:');
+            categoriesToScrape.forEach(c => console.error(`  - ${c.id} (${c.name})`));
+            await scraperService.logout();
+            await app.close();
+            process.exit(1);
+          }
+          categoriesToScrape = categoriesToScrape.slice(startIdx);
+          console.log(`\nResuming from category: ${options.startFrom} (skipping ${startIdx} already-scraped categories)`);
+        }
+
+        // Scrape ALL categories (or remaining ones)
         const modeDesc = options.dateFilter
           ? `with date filter: ${options.dateFilter}`
           : 'with price ranges';
-        console.log(`\nStep 2: Scraping ALL categories ${modeDesc}...\n`);
+        console.log(`\nStep 2: Scraping ${categoriesToScrape.length} categories ${modeDesc}...\n`);
 
         const result = await scraperService.scrapeAllCategories({
           delayBetweenPages: 2000,
           delayBetweenCategories: 5000,
           sendToAPI: options.sendToAPI,
           dateFilter: options.dateFilter,
+          categories: categoriesToScrape,
         });
 
         console.log(`\nAll categories complete!`);

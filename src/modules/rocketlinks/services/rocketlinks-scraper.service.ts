@@ -54,6 +54,8 @@ export class RocketLinksScraperService {
   private readonly password: string;
   private isLoggedIn: boolean = false;
   private context: BrowserContext | null = null;
+  private pageNavigationCount: number = 0;
+  private readonly PAGE_RECYCLE_THRESHOLD = 50; // Recreate page every 50 navigations to prevent memory leaks
 
   constructor(
     private readonly lightpanda: LightpandaService,
@@ -301,8 +303,20 @@ export class RocketLinksScraperService {
 
     const { wordCount = 300, searchResultsNumber = 100, minPrice, maxPrice, dateFilter } = options || {};
 
+    // Periodically recycle the page to prevent memory leaks from accumulated Playwright state
+    this.pageNavigationCount++;
     const pages = this.context.pages();
-    const page = pages[0] || await this.context.newPage();
+    let page: Page;
+
+    if (this.pageNavigationCount % this.PAGE_RECYCLE_THRESHOLD === 0 && pages.length > 0) {
+      this.logger.log(`Recycling browser page to free memory (after ${this.pageNavigationCount} navigations)...`);
+      try {
+        await pages[0].close();
+      } catch {}
+      page = await this.context.newPage();
+    } else {
+      page = pages[0] || await this.context.newPage();
+    }
 
     // Build catalog URL
     let catalogPath = `/catalog/all/p${pageNum}`;
