@@ -22,7 +22,8 @@
       "Bash(npx ts-node:*)",
       "Bash(npm run test:website-analysis:*)",
       "Bash(npm run scrape:paperclub:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(taskkill //F //IM \"chrome.exe\" 2>/dev/null; taskkill //F //IM \"chromium.exe\" 2>/dev/null; echo \"done\")"
     ],
     "deny": [],
     "ask": []

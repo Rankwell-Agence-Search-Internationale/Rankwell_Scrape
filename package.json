@@ -34,7 +34,8 @@
     "test:domdetailer": "ts-node src/cli/test-domdetailer.ts",
     "test:domdetailer:integration": "ts-node src/cli/test-domdetailer-integration.ts",
     "example:lightpanda": "ts-node src/examples/lightpanda-example.ts",
-    "example:domdetailer": "ts-node src/examples/domdetailer-example.ts"
+    "example:domdetailer": "ts-node src/examples/domdetailer-example.ts",
+    "scrape:getfluence": "ts-node src/cli/scrape-getfluence.ts"
   },
   "dependencies": {
     "@google-cloud/bigquery": "^8.1.1",

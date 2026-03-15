@@ -30,7 +30,8 @@ export class LightpandaService implements OnModuleDestroy {
 
   constructor(private readonly configService: ConfigService) {
     // Configuration for Playwright browser
-    this.headless = this.configService.get<boolean>('BROWSER_HEADLESS', true);
+    const headlessEnv = this.configService.get<string>('BROWSER_HEADLESS', 'true');
+    this.headless = headlessEnv === 'true' || headlessEnv === '1';
   }
 
   /**
@@ -59,7 +60,7 @@ export class LightpandaService implements OnModuleDestroy {
           '--disable-blink-features=AutomationControlled',
           '--disable-features=IsolateOrigins,site-per-process',
           '--disable-web-security',
-          '--window-size=1920,1080',
+          '--start-maximized',
           // Additional stealth arguments
           '--disable-infobars',
           '--disable-background-timer-throttling',
@@ -114,7 +115,7 @@ export class LightpandaService implements OnModuleDestroy {
       const contextOptions = {
         userAgent: options?.userAgent ||
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: options?.viewport || { width: 1920, height: 1080 },
+        viewport: options?.viewport || (this.headless ? { width: 1920, height: 1080 } : null),
         locale: options?.locale || 'fr-FR',
         timezoneId: options?.timezoneId || 'Europe/Paris',
         // Additional anti-bot features
