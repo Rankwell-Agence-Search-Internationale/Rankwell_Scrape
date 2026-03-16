@@ -368,42 +368,59 @@ export class GetfluenceScraperService {
    * Open the Categories dropdown panel.
    * Returns true if the panel is visible.
    */
-  private async openCategoriesDropdown(page: Page): Promise<boolean> {
-    await page.waitForSelector('div#start', { timeout: 10000 });
-    await page.waitForTimeout(this.randomDelay(800, 1500));
+  private async openCategoriesDropdown(page: Page, retries: number = 3): Promise<boolean> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await page.waitForSelector('div#start', { timeout: 10000 });
+        await page.waitForTimeout(this.randomDelay(800, 1500));
 
-    // Click the Categories button in div#start (nth-child(2)) to open the popup
-    const categoriesButton = await page.$('div#start > div:nth-child(2) button');
-    if (!categoriesButton) {
-      this.logger.warn('Could not find Categories button');
-      return false;
-    }
+        // Check if panel is already visible (from previous open)
+        const alreadyOpen = await page.$('div.itemPanel[style*="visibility: visible"]');
+        if (alreadyOpen) {
+          return true;
+        }
 
-    await this.humanClick(page, categoriesButton);
-    await page.waitForTimeout(this.randomDelay(1500, 2500));
+        // Click the Categories button in div#start (nth-child(2)) to open the popup
+        const categoriesButton = await page.$('div#start > div:nth-child(2) button');
+        if (!categoriesButton) {
+          this.logger.warn('Could not find Categories button');
+          return false;
+        }
 
-    // Inside the popup, click the first accordion item ("Categories"), not the second ("Topical Trust Flow")
-    const categoriesAccordion = await page.$('.css-1qm3c90-itemBtn:first-child');
-    if (!categoriesAccordion) {
-      // Fallback: find by text
-      const firstItem = await page.$('.item:first-child .css-1qm3c90-itemBtn');
-      if (firstItem) {
-        await this.humanClick(page, firstItem);
-      } else {
-        this.logger.warn('Could not find Categories accordion item');
-        return false;
+        await this.humanClick(page, categoriesButton);
+        await page.waitForTimeout(this.randomDelay(1500, 2500));
+
+        // Inside the popup, click the first accordion item ("Categories"), not the second ("Topical Trust Flow")
+        const categoriesAccordion = await page.$('.css-1qm3c90-itemBtn:first-child');
+        if (!categoriesAccordion) {
+          const firstItem = await page.$('.item:first-child .css-1qm3c90-itemBtn');
+          if (firstItem) {
+            await this.humanClick(page, firstItem);
+          } else {
+            this.logger.warn('Could not find Categories accordion item');
+            if (attempt < retries) continue;
+            return false;
+          }
+        } else {
+          await this.humanClick(page, categoriesAccordion);
+        }
+        await page.waitForTimeout(this.randomDelay(1500, 2500));
+
+        await page.waitForSelector('div.itemPanel[style*="visibility: visible"]', { timeout: 8000 });
+        return true;
+      } catch {
+        this.logger.warn(`Attempt ${attempt}/${retries} to open Categories dropdown failed`);
+        if (attempt < retries) {
+          // Close any partially open popup before retrying
+          const closeBtn = await page.$('div#start > div:nth-child(2) button');
+          if (closeBtn) {
+            await closeBtn.click({ force: true });
+            await page.waitForTimeout(this.randomDelay(1000, 2000));
+          }
+        }
       }
-    } else {
-      await this.humanClick(page, categoriesAccordion);
     }
-    await page.waitForTimeout(this.randomDelay(1500, 2500));
-
-    try {
-      await page.waitForSelector('div.itemPanel[style*="visibility: visible"]', { timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 
   /**
