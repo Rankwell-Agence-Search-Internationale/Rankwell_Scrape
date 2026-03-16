@@ -353,3 +353,30 @@ Rankwell
 [Nest] 1342570  - 03/16/2026, 4:03:22 PM     LOG [GetfluenceScraperService] ============================================================
 [Nest] 1342570  - 03/16/2026, 4:03:33 PM    WARN [GetfluenceScraperService] Could not open dropdown for Hobbies and leisure activities, skipping
 [Nest] 1342570  - 03/16/2026, 4:03:33 PM     LOG [GetfluenceScraperService]
+
+Total sites: 11175
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   1. Animals and pets: 514 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   2. Arts and entertainment: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   3. BtoB / Marketing: 6075 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   4. Community and society: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   5. E-commerce: 909 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   6. Employment and career: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   7. Finance and Economy: 2358 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   8. Food and drink: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   9. Gambling: 394 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   10. Games and Gaming: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   11. Health: 925 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   12. Hobbies and leisure activities: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   13. House and garden: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   14. Industry and construction: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   15. Law and Government: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   16. Lifestyle: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   17. News and Media: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   18. Rated Adult: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   19. Reference works: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   20. Science and education: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   21. Sports: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   22. Tech and Geek: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   23. Travel and tourism: 0 sites
+[Nest] 1342570  - 03/16/2026, 4:06:18 PM     LOG [GetfluenceScraperService]   24. Vehicles and cars: 0 sites
