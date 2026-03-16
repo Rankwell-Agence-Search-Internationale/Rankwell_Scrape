@@ -372,6 +372,7 @@ export class GetfluenceScraperService {
     await page.waitForSelector('div#start', { timeout: 10000 });
     await page.waitForTimeout(this.randomDelay(800, 1500));
 
+    // Click the Categories button in div#start (nth-child(2)) to open the popup
     const categoriesButton = await page.$('div#start > div:nth-child(2) button');
     if (!categoriesButton) {
       this.logger.warn('Could not find Categories button');
@@ -379,6 +380,22 @@ export class GetfluenceScraperService {
     }
 
     await this.humanClick(page, categoriesButton);
+    await page.waitForTimeout(this.randomDelay(1500, 2500));
+
+    // Inside the popup, click the first accordion item ("Categories"), not the second ("Topical Trust Flow")
+    const categoriesAccordion = await page.$('.css-1qm3c90-itemBtn:first-child');
+    if (!categoriesAccordion) {
+      // Fallback: find by text
+      const firstItem = await page.$('.item:first-child .css-1qm3c90-itemBtn');
+      if (firstItem) {
+        await this.humanClick(page, firstItem);
+      } else {
+        this.logger.warn('Could not find Categories accordion item');
+        return false;
+      }
+    } else {
+      await this.humanClick(page, categoriesAccordion);
+    }
     await page.waitForTimeout(this.randomDelay(1500, 2500));
 
     try {
@@ -482,14 +499,8 @@ export class GetfluenceScraperService {
     const allCategoryNames = await this.getCategoryNames(page);
     this.logger.log(`Found ${allCategoryNames.length} categories`);
 
-    // Close dropdown by clicking the Categories button again
-    const categoriesButton = await page.$('div#start > div:nth-child(2) button');
-    if (categoriesButton) {
-      await this.humanClick(page, categoriesButton);
-      await page.waitForTimeout(this.randomDelay(1000, 1500));
-    }
-
     // Step 2: Loop through each category
+    // Panel is already open from the initial read — use it for the first category
     const categoryResults: Array<{ category: string; sites: number }> = [];
     let totalSites = 0;
     const allSites: GetfluenceSiteRaw[] = [];
@@ -504,33 +515,35 @@ export class GetfluenceScraperService {
       this.logger.log('='.repeat(60));
 
       try {
-        // Open the dropdown
-        const panelOpened = await this.openCategoriesDropdown(page);
-        if (!panelOpened) {
-          this.logger.warn(`Could not open dropdown for ${categoryName}, skipping`);
-          categoryResults.push({ category: categoryName, sites: 0 });
-          continue;
+        // For categories after the first, reopen the dropdown
+        if (i > 0) {
+          const panelOpened = await this.openCategoriesDropdown(page);
+          if (!panelOpened) {
+            this.logger.warn(`Could not open dropdown for ${categoryName}, skipping`);
+            categoryResults.push({ category: categoryName, sites: 0 });
+            continue;
+          }
+
+          // Remove all selected category tags first (✕ buttons inside rti--tag spans)
+          if (previousCategoryName) {
+            this.logger.log(`Removing previous categories...`);
+            let removed = 0;
+            while (true) {
+              const removeButton = await page.$('.rti--container span.rti--tag button');
+              if (!removeButton) break;
+              await removeButton.click({ force: true });
+              await page.waitForTimeout(this.randomDelay(800, 1500));
+              removed++;
+              if (removed > 10) break; // safety limit
+            }
+            if (removed > 0) {
+              this.logger.log(`Removed ${removed} category tag(s)`);
+              await page.waitForTimeout(this.randomDelay(500, 1000));
+            }
+          }
         }
 
-        // Remove all selected category tags first (✕ buttons inside rti--tag spans)
-        if (previousCategoryName) {
-          this.logger.log(`Removing previous categories...`);
-          let removed = 0;
-          while (true) {
-            const removeButton = await page.$('.rti--container span.rti--tag button');
-            if (!removeButton) break;
-            await removeButton.click({ force: true });
-            await page.waitForTimeout(this.randomDelay(800, 1500));
-            removed++;
-            if (removed > 10) break; // safety limit
-          }
-          if (removed > 0) {
-            this.logger.log(`Removed ${removed} category tag(s)`);
-            await page.waitForTimeout(this.randomDelay(500, 1000));
-          }
-        }
-
-        // Check this category (dropdown is already open)
+        // Click this category (panel is already open)
         const selected = await this.clickCategoryByName(page, categoryName);
         if (!selected) {
           this.logger.warn(`Could not select ${categoryName}, skipping`);
