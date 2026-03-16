@@ -344,5 +344,12 @@ Rankwell
 ---
 
 **Note**: This scraper respects Paper.club's terms of service. Always use responsibly and comply with rate limits.
-#   R a n k w e l l _ S c r a p e  
+#   R a n k w e l l _ S c r a p e 
  
+ 
+
+============================================================
+[Nest] 1342570  - 03/16/2026, 4:03:22 PM     LOG [GetfluenceScraperService] CATEGORY 12/24: Hobbies and leisure activities
+[Nest] 1342570  - 03/16/2026, 4:03:22 PM     LOG [GetfluenceScraperService] ============================================================
+[Nest] 1342570  - 03/16/2026, 4:03:33 PM    WARN [GetfluenceScraperService] Could not open dropdown for Hobbies and leisure activities, skipping
+[Nest] 1342570  - 03/16/2026, 4:03:33 PM     LOG [GetfluenceScraperService]
