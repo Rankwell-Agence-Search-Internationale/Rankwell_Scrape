@@ -5,6 +5,23 @@ import { NetlinkService } from '../modules/paperclub/services/netlink.service';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+// Global handler for CDP errors from playwright-extra stealth plugin
+// These errors occur during page/context cleanup and are safe to suppress
+process.on('unhandledRejection', (reason: any) => {
+  const message = reason?.message || String(reason);
+
+  if (
+    message?.includes('cdpSession') ||
+    message?.includes('Target page, context or browser has been closed') ||
+    message?.includes('Session closed')
+  ) {
+    console.log('[Suppressed CDP cleanup error]');
+    return;
+  }
+
+  throw reason;
+});
+
 /**
  * Test script for Netlink Scraper Service
  *
