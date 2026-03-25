@@ -188,6 +188,7 @@ Tests the Netlink scraper service (fetches from internal Dashboard API).
 
 **Options:**
 ```bash
+
 npm run test:netlink-scraper           # Scrape all batches
 npm run test:netlink-scraper sample    # Same as default
 npm run test:netlink-scraper batch     # Batch scraping with file output
