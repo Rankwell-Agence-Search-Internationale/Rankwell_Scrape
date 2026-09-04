@@ -96,6 +96,7 @@ export class LightpandaService implements OnModuleDestroy {
     viewport?: { width: number; height: number };
     locale?: string;
     timezoneId?: string;
+    javaScriptEnabled?: boolean;
   }): Promise<BrowserContext> {
     // Serialize context creation to avoid CDP race conditions in stealth plugin
     const previousLock = this.contextCreationLock;
@@ -118,6 +119,9 @@ export class LightpandaService implements OnModuleDestroy {
         viewport: options?.viewport || (this.headless ? { width: 1920, height: 1080 } : null),
         locale: options?.locale || 'fr-FR',
         timezoneId: options?.timezoneId || 'Europe/Paris',
+        // Off when reading HTML captured elsewhere: the page's own scripts would
+        // rewrite the DOM out of context and strip the markup we came to read.
+        javaScriptEnabled: options?.javaScriptEnabled ?? true,
         // Additional anti-bot features
         extraHTTPHeaders: {
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -269,6 +273,7 @@ export class LightpandaService implements OnModuleDestroy {
     contextOptions?: {
       userAgent?: string;
       viewport?: { width: number; height: number };
+      javaScriptEnabled?: boolean;
     },
   ): Promise<T> {
     const maxRetries = 3;

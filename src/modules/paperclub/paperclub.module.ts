@@ -12,6 +12,7 @@ import { LightpandaService } from '../../common/lightpanda.service';
 import { DashboardHttpClient } from '../../common/dashboard-http-client.service';
 import { DomDetailerService } from '../../common/domdetailer.service';
 import { GoogleSearchConsoleService } from '../../common/google-search-console.service';
+import { FirecrawlService } from '../../common/firecrawl.service';
 
 /**
  * Paper.club Module
@@ -39,6 +40,7 @@ import { GoogleSearchConsoleService } from '../../common/google-search-console.s
     DashboardHttpClient,
     DomDetailerService,
     GoogleSearchConsoleService,
+    FirecrawlService,
   ],
   exports: [
     PaperClubScraperService,
@@ -51,6 +53,7 @@ import { GoogleSearchConsoleService } from '../../common/google-search-console.s
     DashboardHttpClient,
     DomDetailerService,
     GoogleSearchConsoleService,
+    FirecrawlService,
   ],
 })
 export class PaperClubModule {}

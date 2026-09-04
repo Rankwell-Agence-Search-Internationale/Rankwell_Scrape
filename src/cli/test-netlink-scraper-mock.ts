@@ -1,6 +1,7 @@
 import { NetlinkScraperService } from '../modules/paperclub/services/netlink-scraper.service';
 import { LightpandaService } from '../common/lightpanda.service';
 import { NetlinkService } from '../modules/paperclub/services/netlink.service';
+import { FirecrawlService } from '../common/firecrawl.service';
 import { ConfigService } from '@nestjs/config';
 import * as dotenv from 'dotenv';
 
@@ -25,7 +26,9 @@ async function testScraperWithMockData() {
   // Mock dashboard client (not used in this test)
   const dashboardClient = null as any;
 
-  const scraperService = new NetlinkScraperService(lightpanda, netlinkService, dashboardClient);
+  const firecrawl = new FirecrawlService(configService);
+
+  const scraperService = new NetlinkScraperService(lightpanda, netlinkService, dashboardClient, firecrawl);
 
   try {
     console.log('\nTest 1: Scraping example.com and looking for example.com links');

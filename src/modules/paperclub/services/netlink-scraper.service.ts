@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LightpandaService } from '../../../common/lightpanda.service';
 import { NetlinkService, NetlinkItem } from './netlink.service';
 import { DashboardHttpClient } from '../../../common/dashboard-http-client.service';
+import { FirecrawlService } from '../../../common/firecrawl.service';
 
 import type { Page } from 'playwright-core';
 import * as fs from 'fs/promises';
@@ -41,6 +42,9 @@ export interface ScrapedNetlinkData {
 
   // All links found (for debugging)
   allLinksCount?: number;
+
+  // Set when our own browser was blocked and the page was retrieved via Firecrawl
+  recoveredVia?: 'firecrawl';
 
 
   [key: string]: any;
@@ -121,6 +125,7 @@ export class NetlinkScraperService {
     private readonly lightpanda: LightpandaService,
     private readonly netlinkService: NetlinkService,
     private readonly dashboardClient: DashboardHttpClient,
+    private readonly firecrawl: FirecrawlService,
   ) {}
 
   /**
@@ -268,11 +273,19 @@ export class NetlinkScraperService {
       // Site is not accessible or failed to scrape
       online_status = 3;
     } else if (result.foundLink?.matched === true) {
-      // Site is accessible and exact matching link found
+      // Exact matching link found. Checked before the status code because
+      // finding the link proves we read the real article - some publishers
+      // answer 403 to the scraper while still serving the full page.
       online_status = 1;
     } else if (result.domainFound === true) {
       // Site is accessible and domain found but not exact URL
       online_status = 4;
+    } else if (result.statusCode !== undefined && result.statusCode >= 400) {
+      // page.goto() resolves on 4xx/5xx, so an error page (bot block, rate
+      // limit, deleted page) would otherwise be parsed as a real page with no
+      // matching link. Nothing was found and the response was an error, so we
+      // cannot claim the link is absent - report it as not accessible.
+      online_status = 3;
     } else {
       // Site is accessible but no matching link or domain found
       online_status = 2;
@@ -598,6 +611,25 @@ export class NetlinkScraperService {
           }
         });
 
+        // The page loaded, but check whether we actually saw the publisher's
+        // content or an anti-bot wall before trusting a "link not found" result.
+        // Some sites answer 403 while still serving the article, so a result
+        // that already found the link is kept as-is - there is nothing to gain
+        // from re-fetching and a worse second read could only lose information.
+        const foundSomething =
+          scrapedData.foundLink?.matched === true || scrapedData.domainFound === true;
+
+        if (!foundSomething && this.looksBlocked(scrapedData.statusCode, scrapedData.allLinksCount)) {
+          const viaFirecrawl = await this.scrapeViaFirecrawl(url, landingPage);
+          // Only take the fallback when it actually located the link. If it
+          // comes back empty we cannot tell "link is gone" from "fetched the
+          // wrong thing", so the original blocked result stands and the netlink
+          // is reported as not accessible rather than as removed.
+          if (viaFirecrawl?.foundLink?.matched || viaFirecrawl?.domainFound) {
+            return viaFirecrawl;
+          }
+        }
+
         // Return successful result
         return {
           url,
@@ -633,6 +665,13 @@ export class NetlinkScraperService {
       }
     }
 
+    // Our browser could not reach the page at all. It may still be reachable
+    // from a different network, so try the fallback before declaring it offline.
+    const viaFirecrawl = await this.scrapeViaFirecrawl(url, landingPage);
+    if (viaFirecrawl?.foundLink?.matched || viaFirecrawl?.domainFound) {
+      return viaFirecrawl;
+    }
+
     // All retries failed
     this.logger.error(`Failed to scrape ${url} after ${retries} attempts`);
     return {
@@ -642,6 +681,78 @@ export class NetlinkScraperService {
       success: false,
       error: lastError.message,
     };
+  }
+
+  /**
+   * Decide whether a loaded page should be distrusted.
+   *
+   * page.goto() resolves on 4xx/5xx, and anti-bot vendors often serve a
+   * challenge with HTTP 200, so "no matching link" can mean "we never saw the
+   * article" rather than "the backlink was removed".
+   *
+   * 404/410 are excluded on purpose: a deleted page is genuine information and
+   * returns the same from any network, so retrying it only wastes credits.
+   */
+  private looksBlocked(statusCode?: number, allLinksCount?: number): boolean {
+    if (statusCode === 404 || statusCode === 410) return false;
+    if (statusCode !== undefined && statusCode >= 400) return true;
+
+    // A real article carries dozens of links; a challenge page carries almost
+    // none. Measured across ~100 live netlinks, no genuine page had under 20.
+    return allLinksCount !== undefined && allLinksCount < 5;
+  }
+
+  /**
+   * Re-fetch a page through Firecrawl and run the normal extraction over it.
+   *
+   * The HTML is loaded into a real page so extractData() applies unchanged -
+   * matching rules and rel/nofollow handling stay in one place instead of being
+   * reimplemented against a second parser.
+   *
+   * Returns null if the fallback is unavailable or also failed, so the caller
+   * keeps its original (not-accessible) result rather than claiming the link is
+   * absent based on a page we never read.
+   */
+  private async scrapeViaFirecrawl(
+    url: string,
+    landingPage?: string,
+  ): Promise<ScrapedNetlinkData | null> {
+    if (!this.firecrawl.isEnabled()) return null;
+
+    this.logger.log(`Falling back to Firecrawl for ${url}`);
+    const fetched = await this.firecrawl.fetchRawHtml(url);
+    if (!fetched) return null;
+
+    try {
+      const extracted = await this.lightpanda.withPage(async (page) => {
+        // <base> preserves resolution of relative hrefs, which would otherwise
+        // resolve against about:blank once the HTML is loaded out of context.
+        const html = fetched.html.replace(
+          /<head([^>]*)>/i,
+          `<head$1><base href="${url}">`,
+        );
+        await page.setContent(html, { waitUntil: 'domcontentloaded' });
+        return this.extractData(page, url, landingPage);
+      }, { javaScriptEnabled: false });
+
+      this.logger.log(
+        `Firecrawl recovered ${url} (${extracted.allLinksCount} links, ` +
+          `match=${extracted.foundLink?.matched ?? false})`,
+      );
+
+      return {
+        url,
+        landingPage,
+        scrapedAt: new Date().toISOString(),
+        success: true,
+        ...extracted,
+        statusCode: fetched.statusCode,
+        recoveredVia: 'firecrawl',
+      };
+    } catch (error) {
+      this.logger.warn(`Failed to parse Firecrawl HTML for ${url}: ${error.message}`);
+      return null;
+    }
   }
 
 
