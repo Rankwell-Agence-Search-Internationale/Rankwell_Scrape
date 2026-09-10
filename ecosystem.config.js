@@ -1,8 +1,15 @@
+// The PM2 daemon may run on a different Node than the one this app was
+// installed with (e.g. a host whose system Node is pinned for another app).
+// Export SCRAPER_NODE=/path/to/node before `pm2 start` to pick the runtime;
+// pm2 save persists it, so `pm2 resurrect` after a reboot keeps it too.
+const interpreter = process.env.SCRAPER_NODE;
+
 module.exports = {
   apps: [
     {
       name: 'rankwell-scraper',
       script: 'dist/main.js',
+      ...(interpreter ? { interpreter } : {}),
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
