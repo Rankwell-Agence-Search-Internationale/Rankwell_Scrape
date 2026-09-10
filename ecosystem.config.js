@@ -19,6 +19,12 @@ module.exports = {
         // here: the daily job must fire at 23:00 Paris and the "page = day of
         // month" number must be the Paris day.
         TZ: 'Europe/Paris',
+        // The VPS has no X server: a headed launch dies on 'Missing X server or
+        // $DISPLAY'. Pinned here because process.env beats the .env file in
+        // @nestjs/config, so a developer .env with BROWSER_HEADLESS=false
+        // cannot take production headed.
+        BROWSER_HEADLESS: 'true',
+        HEADLESS_BROWSER: 'true',
       },
       env: {
         NODE_ENV: 'development',
