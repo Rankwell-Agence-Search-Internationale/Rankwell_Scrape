@@ -2,11 +2,14 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 import * as cron from 'node-cron';
+import { spawn } from 'child_process';
+import * as path from 'path';
 import { NetlinkScraperService, ScrapedNetlinkData } from './modules/paperclub/services/netlink-scraper.service';
 import { NetlinkService } from './modules/paperclub/services/netlink.service';
 import { DomDetailerService } from './common/domdetailer.service';
 import { DashboardHttpClient } from './common/dashboard-http-client.service';
 import { ScrapingRunReporterService } from './common/scraping-run-reporter.service';
+import { daysUntilEndOfMonth } from './common/calendar';
 
 const logger = new Logger('Main');
 
@@ -211,14 +214,53 @@ async function runDomDetailerJob() {
   }
 }
 
-/**
- * Check if today is the last day of the month
- */
 function isLastDayOfMonth(): boolean {
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return tomorrow.getDate() === 1;
+  return daysUntilEndOfMonth() === 0;
+}
+
+/**
+ * Run one of the compiled CLI scrapers as a child process and resolve with
+ * its exit code. The CLIs already report their run to /scraping/runs, so the
+ * scheduler only has to launch them.
+ *
+ * A child rather than an in-process call because the RocketLinks scrape needs
+ * a 4 GB heap and runs for hours, while PM2 restarts this process at 2 GB —
+ * done in-process, a heavy scrape could take the whole schedule down with it.
+ */
+function runCliJob(
+  name: string,
+  script: string,
+  args: string[] = [],
+  nodeArgs: string[] = [],
+): Promise<number> {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, 'cli', script);
+    logger.log(`Starting ${name}: node ${[...nodeArgs, scriptPath, ...args].join(' ')}`);
+    const child = spawn(process.execPath, [...nodeArgs, scriptPath, ...args], {
+      // Inherit stdio so the child's output lands in the PM2 logs, and env so
+      // it sees TZ, BROWSER_HEADLESS and the .env loaded from the same cwd.
+      stdio: 'inherit',
+      env: process.env,
+    });
+    child.on('exit', (code, signal) => {
+      logger.log(`${name} exited with ${signal ? `signal ${signal}` : `code ${code}`}`);
+      resolve(code ?? -1);
+    });
+    child.on('error', (error) => {
+      logger.error(`${name} failed to start: ${error.message}`);
+      resolve(-1);
+    });
+  });
+}
+
+/**
+ * Monthly marketplace catalog refresh: Paper.club, then RocketLinks once it
+ * finishes, so the two browser-and-API-heavy jobs never overlap each other or
+ * the 23:00 netlink run on a 2-CPU host.
+ */
+async function runMarketplaceScrapersJob() {
+  await runCliJob('paperclub', 'scrape-paperclub.js');
+  await runCliJob('rocketlinks', 'scrape-rocketlinks.js', [], ['--max-old-space-size=4096']);
 }
 
 /**
@@ -240,9 +282,20 @@ function initCronJobs() {
     }
   });
 
+  // Refresh the Paper.club and RocketLinks catalogs monthly, 5 days before the
+  // end of the month, at 2 AM. That date is the 23rd–26th depending on the
+  // month, so the schedule covers that window and the handler checks the day.
+  cron.schedule('0 2 23-26 * *', () => {
+    if (daysUntilEndOfMonth() === 5) {
+      logger.log('Cron triggered: Running Paper.club + RocketLinks scrapers (5 days before month end) at 2 AM');
+      runMarketplaceScrapersJob();
+    }
+  });
+
   logger.log('Cron jobs initialized:');
   logger.log('  - Netlink scraper: Daily at 11 PM');
   logger.log('  - DomDetailer: Last day of month at 11 PM');
+  logger.log('  - Paper.club + RocketLinks: 5 days before month end at 2 AM');
 }
 
 /**
@@ -362,4 +415,4 @@ if (require.main === module) {
   }
 }
 
-export { bootstrap, testNetlinkScraper, testDomDetailer };
+export { bootstrap, testNetlinkScraper, testDomDetailer, runCliJob, runMarketplaceScrapersJob };
