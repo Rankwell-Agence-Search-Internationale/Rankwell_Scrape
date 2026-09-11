@@ -60,7 +60,7 @@ async function main() {
     // Run the scraper
     // NOTE: Data is now sent to API after EACH category is scraped
     console.log('Starting scraping process...\n');
-    const run = reporter.start('paperclub', apiUrl);
+    const run = reporter.start('paperclub');
     let scrapedData: Awaited<ReturnType<PaperClubScraperService['scrapeAllCategories']>>;
     try {
       scrapedData = await scraperService.scrapeAllCategories({
@@ -82,11 +82,6 @@ async function main() {
         url: `${apiUrl} category:${f.category_id} (${f.category})`,
         reason: f.error,
       })),
-      details: {
-        categories_scraped: scrapedData.categories.length,
-        categories_failed: scrapedData.failed.length,
-        send_to_api: options.sendToAPI,
-      },
     };
     if (scrapedData.total === 0 && categoriesAttempted > 0) {
       await run.fail(new Error(`0 sites returned across ${categoriesAttempted} categories`), outcome);

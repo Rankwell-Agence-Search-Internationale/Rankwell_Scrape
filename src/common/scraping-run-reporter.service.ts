@@ -1,18 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as os from 'os';
 import { DashboardHttpClient } from './dashboard-http-client.service';
 
 /**
  * Scraping Run Reporter
  *
  * Posts one record per scraping job to the Dashboard so it can store the run
- * and notify people (POST /scraping/runs, authenticated with X-Api-Key).
+ * and send the notification mail (POST /scraping/runs, X-Api-Key auth).
  *
  * Report at the outermost point that owns the job — the cron handler in
  * main.ts or the CLI entry point — so each invocation yields exactly one run:
  *
- *   const run = reporter.start('paperclub', 'https://app.paper.club/api');
+ *   const run = reporter.start('paperclub');
  *   try {
  *     const data = await scrape();
  *     await run.finish({ successCount: data.total, failed: data.failed });
@@ -21,13 +20,13 @@ import { DashboardHttpClient } from './dashboard-http-client.service';
  *     throw error;
  *   }
  *
- * `status` is about the job, not the items: a run that completed with some
- * URLs failing is "success" with a non-zero failed_count; "failed" means the
- * job itself aborted. Reporting never throws — a Dashboard outage must not
- * turn a finished scrape into a failed one.
+ * A run is "success" only when nothing failed. Any failed item, or the job
+ * aborting, makes it "failure" with an error_message the mail can show.
+ * Reporting never throws — a Dashboard outage must not turn a finished
+ * scrape into a failed one.
  */
 
-export type ScrapingRunStatus = 'success' | 'failed';
+export type ScrapingRunStatus = 'success' | 'failure';
 
 export interface ScrapingRunFailure {
   url: string;
@@ -39,77 +38,66 @@ export interface ScrapingRunOutcome {
   failed?: ScrapingRunFailure[];
   /** Set when failures cannot be listed individually; defaults to failed.length */
   failedCount?: number;
-  /** Free-form extras merged into `details` (page numbers, category breakdowns…) */
-  details?: Record<string, unknown>;
 }
 
 export interface ScrapingRunPayload {
   scraper: string;
-  target: string;
   status: ScrapingRunStatus;
-  started_at: string;
-  finished_at: string;
   success_count: number;
   failed_count: number;
   error_message: string | null;
-  details: Record<string, unknown>;
+  notify_email: string[];
+  details: { failed: ScrapingRunFailure[] };
 }
 
-/** Keep the payload bounded on a bad night; the full list is still in the logs. */
-export const MAX_FAILURES_IN_PAYLOAD = 200;
-
-/**
- * ISO-8601 with the process's local UTC offset (2026-09-11T03:00:00+02:00),
- * rather than Date#toISOString's "Z", so the Dashboard sees Paris wall-clock
- * time — the same time the cron schedule and the logs use.
- */
-export function toLocalIso(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? '+' : '-';
-  const abs = Math.abs(offsetMinutes);
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
-    `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
-  );
-}
+/** Who gets the mail when SCRAPING_RUNS_NOTIFY_EMAIL is not set. */
+export const DEFAULT_NOTIFY_EMAIL = ['reewaz@rankwell.fr'];
 
 export function buildScrapingRunPayload(input: {
   scraper: string;
-  target: string;
-  status: ScrapingRunStatus;
-  startedAt: Date;
-  finishedAt: Date;
+  notifyEmail: string[];
   error?: unknown;
   outcome?: ScrapingRunOutcome;
 }): ScrapingRunPayload {
-  const { scraper, target, status, startedAt, finishedAt, error, outcome } =
-    input;
+  const { scraper, notifyEmail, error, outcome } = input;
   const failed = outcome?.failed ?? [];
   const failedCount = outcome?.failedCount ?? failed.length;
-
-  const details: Record<string, unknown> = {
-    host: os.hostname(),
-    duration_ms: finishedAt.getTime() - startedAt.getTime(),
-    ...(outcome?.details ?? {}),
-    failed: failed.slice(0, MAX_FAILURES_IN_PAYLOAD),
-  };
-  if (failed.length > MAX_FAILURES_IN_PAYLOAD) {
-    details.failed_truncated = failed.length - MAX_FAILURES_IN_PAYLOAD;
-  }
+  const aborted = error !== undefined && error !== null;
 
   return {
     scraper,
-    target,
-    status,
-    started_at: toLocalIso(startedAt),
-    finished_at: toLocalIso(finishedAt),
+    status: aborted || failedCount > 0 ? 'failure' : 'success',
     success_count: outcome?.successCount ?? 0,
     failed_count: failedCount,
-    error_message: error ? errorMessage(error) : null,
-    details,
+    error_message: aborted
+      ? errorMessage(error)
+      : failedCount > 0
+        ? summarizeFailures(failedCount, failed)
+        : null,
+    notify_email: notifyEmail,
+    details: { failed },
   };
+}
+
+/**
+ * "8 failed (5× timeout, 3× HTTP 403)" — the mail subject line, basically.
+ * Reasons are grouped verbatim; long Playwright messages are cut so three of
+ * them still fit on a line.
+ */
+export function summarizeFailures(
+  count: number,
+  failed: ScrapingRunFailure[],
+): string {
+  const byReason = new Map<string, number>();
+  for (const f of failed) {
+    const reason = (f.reason || 'unknown error').slice(0, 60);
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+  }
+  const top = [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([reason, n]) => `${n}× ${reason}`);
+  return top.length ? `${count} failed (${top.join(', ')})` : `${count} failed`;
 }
 
 function errorMessage(error: unknown): string {
@@ -123,42 +111,37 @@ function errorMessage(error: unknown): string {
  * can fail() in a catch block without checking whether finish() already ran.
  */
 export class ScrapingRun {
-  private readonly startedAt = new Date();
   private closed = false;
 
   constructor(
     private readonly reporter: ScrapingRunReporterService,
     readonly scraper: string,
-    readonly target: string,
   ) {}
 
   finish(outcome: ScrapingRunOutcome): Promise<void> {
-    return this.close('success', undefined, outcome);
+    return this.close(undefined, outcome);
   }
 
   /** `outcome` carries whatever partial progress was made before the abort. */
   fail(error: unknown, outcome?: ScrapingRunOutcome): Promise<void> {
-    return this.close('failed', error, outcome);
+    return this.close(error ?? new Error('unknown error'), outcome);
   }
 
   private async close(
-    status: ScrapingRunStatus,
     error: unknown,
     outcome?: ScrapingRunOutcome,
   ): Promise<void> {
     if (this.closed) return;
     this.closed = true;
 
-    const payload = buildScrapingRunPayload({
-      scraper: this.scraper,
-      target: this.target,
-      status,
-      startedAt: this.startedAt,
-      finishedAt: new Date(),
-      error,
-      outcome,
-    });
-    await this.reporter.report(payload);
+    await this.reporter.report(
+      buildScrapingRunPayload({
+        scraper: this.scraper,
+        notifyEmail: this.reporter.notifyEmail,
+        error,
+        outcome,
+      }),
+    );
   }
 }
 
@@ -167,6 +150,7 @@ export class ScrapingRunReporterService {
   private readonly logger = new Logger(ScrapingRunReporterService.name);
   private readonly apiKey: string | undefined;
   private readonly url: string;
+  readonly notifyEmail: string[];
   private warnedMissingKey = false;
 
   constructor(
@@ -177,10 +161,13 @@ export class ScrapingRunReporterService {
     // Relative by default so it follows DASHBOARD_BASE_URL; an absolute URL
     // here bypasses the base (axios ignores baseURL for absolute urls).
     this.url = configService.get<string>('SCRAPING_RUNS_URL', '/scraping/runs');
+    this.notifyEmail = parseEmails(
+      configService.get<string>('SCRAPING_RUNS_NOTIFY_EMAIL'),
+    );
   }
 
-  start(scraper: string, target: string): ScrapingRun {
-    return new ScrapingRun(this, scraper, target);
+  start(scraper: string): ScrapingRun {
+    return new ScrapingRun(this, scraper);
   }
 
   /**
@@ -216,4 +203,12 @@ export class ScrapingRunReporterService {
       );
     }
   }
+}
+
+function parseEmails(value: string | undefined): string[] {
+  const list = (value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.length ? list : DEFAULT_NOTIFY_EMAIL;
 }

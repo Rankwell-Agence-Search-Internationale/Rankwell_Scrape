@@ -7,7 +7,6 @@ import { NetlinkService } from './modules/paperclub/services/netlink.service';
 import { DomDetailerService } from './common/domdetailer.service';
 import { DashboardHttpClient } from './common/dashboard-http-client.service';
 import { ScrapingRunReporterService } from './common/scraping-run-reporter.service';
-import { ConfigService } from '@nestjs/config';
 
 const logger = new Logger('Main');
 
@@ -39,12 +38,8 @@ async function runNetlinkScraperJob() {
   const scraperService = app.get(NetlinkScraperService);
   const netlinkService = app.get(NetlinkService);
   const reporter = app.get(ScrapingRunReporterService);
-  const dashboardBaseUrl = app.get(ConfigService).get<string>('DASHBOARD_BASE_URL', '');
 
-  const run = reporter.start(
-    'netlink',
-    `${dashboardBaseUrl}/netlink/all/paginated?page=${dayOfMonth}&limit=200`,
-  );
+  const run = reporter.start('netlink');
   // Kept outside the try so a failure after scraping can still report progress
   let results: ScrapedNetlinkData[] = [];
   let totalPages: number | undefined;
@@ -79,13 +74,11 @@ async function runNetlinkScraperJob() {
 
     await run.finish({
       ...netlinkOutcome(results),
-      details: { page: dayOfMonth, total_pages: totalPages, fetched: netlinks.length },
     });
   } catch (error) {
     logger.error('Netlink scraper job failed:', error.message);
     await run.fail(error, {
       ...netlinkOutcome(results),
-      details: { page: dayOfMonth, total_pages: totalPages },
     });
   } finally {
     await app.close();
@@ -112,13 +105,12 @@ async function runDomDetailerJob() {
   const netlinkService = app.get(NetlinkService);
   const dashboardClient = app.get(DashboardHttpClient);
   const reporter = app.get(ScrapingRunReporterService);
-  const dashboardBaseUrl = app.get(ConfigService).get<string>('DASHBOARD_BASE_URL', '');
 
   const BATCH_SIZE = 100;
   const CONCURRENCY = 3;
   const DELAY = 500;
 
-  const run = reporter.start('domdetailer', `${dashboardBaseUrl}/netlink/all/paginated (all pages)`);
+  const run = reporter.start('domdetailer');
 
   let currentPage = 1;
   let totalProcessed = 0;
@@ -207,14 +199,12 @@ async function runDomDetailerJob() {
     await run.finish({
       successCount: totalSuccess,
       failed: failures,
-      details: { pages: currentPage - 1, processed: totalProcessed },
     });
   } catch (error) {
     logger.error('DomDetailer job failed:', error.message);
     await run.fail(error, {
       successCount: totalSuccess,
       failed: failures,
-      details: { pages_completed: currentPage - 1, processed: totalProcessed },
     });
   } finally {
     await app.close();

@@ -55,7 +55,7 @@ async function main() {
     const baseUrl = app.get(ConfigService).get<string>('GETFLUENCE_URL', 'https://app.getfluence.com');
 
     // Started before login so a login failure is reported as a failed job.
-    const run = options.loginOnly ? null : reporter.start('getfluence', baseUrl);
+    const run = options.loginOnly ? null : reporter.start('getfluence');
 
     try {
       // Step 1: Login to Getfluence
@@ -89,11 +89,6 @@ async function main() {
         failed: result.categoryResults
           .filter(r => r.error)
           .map(r => ({ url: `${baseUrl} category:${r.category}`, reason: r.error })),
-        details: {
-          categories: result.categoryResults.length,
-          max_pages: options.maxPages,
-          by_category: result.categoryResults.map(r => ({ category: r.category, sites: r.sites })),
-        },
       };
       if (result.totalSites === 0 && result.categoryResults.length > 0) {
         await run.fail(new Error(`0 sites returned across ${result.categoryResults.length} categories`), outcome);

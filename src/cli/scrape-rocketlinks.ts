@@ -82,10 +82,8 @@ async function main() {
 
     // One run per invocation, started before login so a login failure is
     // reported as a failed job too. --login is a connectivity check, not a job.
-    const target = options.scrapeAll
-      ? `${baseUrl}/catalog/all`
-      : `${baseUrl}/catalog/all/category:${options.category}`;
-    const run = options.loginOnly ? null : reporter.start('rocketlinks', target);
+    const categoryUrl = `${baseUrl}/catalog/all/category:${options.category}`;
+    const run = options.loginOnly ? null : reporter.start('rocketlinks');
 
     try {
       // Step 1: Login to RocketLinks
@@ -146,12 +144,6 @@ async function main() {
           failed: result.categoryResults
             .filter(r => r.error)
             .map(r => ({ url: `${baseUrl}/catalog/all/category:${r.category}`, reason: r.error })),
-          details: {
-            mode: options.dateFilter ? 'date' : 'price_ranges',
-            date_filter: options.dateFilter,
-            categories: result.totalCategories,
-            by_category: result.categoryResults.map(r => ({ category: r.category, sites: r.sites, pages: r.pages })),
-          },
         };
         // Zero sites across every category is the catalog being unavailable
         // to us (an interstitial, a redesign, a block), not an empty market.
@@ -181,13 +173,6 @@ async function main() {
           await run.finish({
             successCount: result.totalSites,
             failed: [],
-            details: {
-              mode: 'date',
-              date_filter: options.dateFilter,
-              category: options.category,
-              pages: result.totalPages,
-              ...(result.totalSites === 0 ? { note: 'no sites found' } : {}),
-            },
           });
         } else {
           // Price range mode
@@ -204,16 +189,9 @@ async function main() {
             failed: result.priceRangeResults
               .filter(r => r.error)
               .map(r => ({
-                url: `${target}/minSAP:${r.minPrice}/maxSAP:${r.maxPrice}`,
+                url: `${categoryUrl}/minSAP:${r.minPrice}/maxSAP:${r.maxPrice}`,
                 reason: r.error,
               })),
-            details: {
-              mode: 'price_ranges',
-              category: options.category,
-              pages: result.totalPages,
-              price_ranges: result.priceRangeResults.length,
-              ...(result.totalSites === 0 ? { note: 'no sites found' } : {}),
-            },
           });
         }
       }

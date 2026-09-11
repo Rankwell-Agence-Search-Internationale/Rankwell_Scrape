@@ -1,118 +1,134 @@
 import {
   buildScrapingRunPayload,
-  MAX_FAILURES_IN_PAYLOAD,
+  DEFAULT_NOTIFY_EMAIL,
   ScrapingRun,
   ScrapingRunReporterService,
-  toLocalIso,
+  summarizeFailures,
 } from './scraping-run-reporter.service';
 
-describe('toLocalIso', () => {
-  it('formats with the local UTC offset rather than Z', () => {
-    const iso = toLocalIso(new Date(2026, 8, 11, 3, 0, 0));
-    expect(iso).toMatch(/^2026-09-11T03:00:00[+-]\d{2}:\d{2}$/);
-  });
-});
+const notifyEmail = ['reewaz@rankwell.fr'];
 
 describe('buildScrapingRunPayload', () => {
-  const startedAt = new Date(2026, 8, 11, 3, 0, 0);
-  const finishedAt = new Date(2026, 8, 11, 3, 12, 40);
-
-  it('matches the Dashboard contract for a completed run with item failures', () => {
+  it('matches the Dashboard contract for a run with item failures', () => {
     const payload = buildScrapingRunPayload({
       scraper: 'paperclub',
-      target: 'https://example.com/category',
-      status: 'success',
-      startedAt,
-      finishedAt,
+      notifyEmail,
       outcome: {
         successCount: 1240,
-        failed: [{ url: 'https://example.com/a', reason: 'timeout' }],
+        failed: [
+          { url: 'https://example.com/a', reason: 'timeout' },
+          { url: 'https://example.com/b', reason: 'HTTP 403' },
+          { url: 'https://example.com/c', reason: 'timeout' },
+        ],
       },
     });
 
-    expect(payload).toMatchObject({
+    expect(payload).toEqual({
       scraper: 'paperclub',
-      target: 'https://example.com/category',
-      status: 'success',
+      status: 'failure',
       success_count: 1240,
-      failed_count: 1,
-      error_message: null,
+      failed_count: 3,
+      error_message: '3 failed (2× timeout, 1× HTTP 403)',
+      notify_email: ['reewaz@rankwell.fr'],
+      details: {
+        failed: [
+          { url: 'https://example.com/a', reason: 'timeout' },
+          { url: 'https://example.com/b', reason: 'HTTP 403' },
+          { url: 'https://example.com/c', reason: 'timeout' },
+        ],
+      },
     });
-    expect(payload.details.failed).toEqual([
-      { url: 'https://example.com/a', reason: 'timeout' },
-    ]);
-    expect(payload.details.duration_ms).toBe(12 * 60 * 1000 + 40 * 1000);
-    expect(typeof payload.details.host).toBe('string');
   });
 
-  it('carries the abort reason and partial progress for a failed run', () => {
+  it('is a success only when nothing failed', () => {
     const payload = buildScrapingRunPayload({
       scraper: 'netlink',
-      target: 'page 10',
-      status: 'failed',
-      startedAt,
-      finishedAt,
+      notifyEmail,
+      outcome: { successCount: 100, failed: [] },
+    });
+
+    expect(payload.status).toBe('success');
+    expect(payload.error_message).toBeNull();
+    expect(payload.failed_count).toBe(0);
+    expect(payload.details.failed).toEqual([]);
+  });
+
+  it('carries the abort reason and partial progress when the job throws', () => {
+    const payload = buildScrapingRunPayload({
+      scraper: 'netlink',
+      notifyEmail,
       error: new Error('Dashboard returned 502'),
       outcome: { successCount: 40, failed: [] },
     });
 
-    expect(payload.status).toBe('failed');
+    expect(payload.status).toBe('failure');
     expect(payload.error_message).toBe('Dashboard returned 502');
     expect(payload.success_count).toBe(40);
-    expect(payload.failed_count).toBe(0);
   });
 
   it('defaults counts to zero when a job aborts before producing anything', () => {
     const payload = buildScrapingRunPayload({
       scraper: 'rocketlinks',
-      target: 'catalog',
-      status: 'failed',
-      startedAt,
-      finishedAt,
+      notifyEmail,
       error: 'login failed',
     });
 
     expect(payload.success_count).toBe(0);
     expect(payload.failed_count).toBe(0);
     expect(payload.error_message).toBe('login failed');
-    expect(payload.details.failed).toEqual([]);
   });
 
   it('lets failedCount override the list length when failures are not enumerable', () => {
     const payload = buildScrapingRunPayload({
       scraper: 'domdetailer',
-      target: 'all',
-      status: 'success',
-      startedAt,
-      finishedAt,
+      notifyEmail,
       outcome: { successCount: 900, failedCount: 17 },
     });
 
+    expect(payload.status).toBe('failure');
     expect(payload.failed_count).toBe(17);
+    expect(payload.error_message).toBe('17 failed');
   });
 
-  it('caps the failure list and records how many were dropped', () => {
-    const failed = Array.from(
-      { length: MAX_FAILURES_IN_PAYLOAD + 5 },
-      (_, i) => ({
-        url: `https://example.com/${i}`,
-        reason: 'timeout',
-      }),
-    );
+  it('emits exactly the contract keys and nothing else', () => {
     const payload = buildScrapingRunPayload({
-      scraper: 'netlink',
-      target: 'page 1',
-      status: 'success',
-      startedAt,
-      finishedAt,
-      outcome: { successCount: 0, failed },
+      scraper: 'paperclub',
+      notifyEmail,
+      outcome: { successCount: 1 },
     });
 
-    expect(payload.failed_count).toBe(MAX_FAILURES_IN_PAYLOAD + 5);
-    expect((payload.details.failed as unknown[]).length).toBe(
-      MAX_FAILURES_IN_PAYLOAD,
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        'scraper',
+        'status',
+        'success_count',
+        'failed_count',
+        'error_message',
+        'notify_email',
+        'details',
+      ].sort(),
     );
-    expect(payload.details.failed_truncated).toBe(5);
+    expect(Object.keys(payload.details)).toEqual(['failed']);
+  });
+});
+
+describe('summarizeFailures', () => {
+  it('groups by reason, most common first, at most three', () => {
+    const failed = [
+      ...Array(5).fill({ url: 'a', reason: 'timeout' }),
+      ...Array(3).fill({ url: 'b', reason: 'HTTP 403' }),
+      { url: 'c', reason: 'DNS' },
+      { url: 'd', reason: 'TLS' },
+    ];
+    expect(summarizeFailures(10, failed)).toBe(
+      '10 failed (5× timeout, 3× HTTP 403, 1× DNS)',
+    );
+  });
+
+  it('truncates long reasons so the summary stays one line', () => {
+    const reason = 'page.goto: Timeout 30000ms exceeded. ' + 'x'.repeat(100);
+    const summary = summarizeFailures(1, [{ url: 'a', reason }]);
+    expect(summary.length).toBeLessThan(90);
   });
 });
 
@@ -128,13 +144,37 @@ describe('ScrapingRunReporterService', () => {
       { post } as any,
     );
 
-    await service.start('paperclub', 'target').finish({ successCount: 1 });
+    await service.start('paperclub').finish({ successCount: 1 });
 
     expect(post).toHaveBeenCalledTimes(1);
     const [url, payload, requestConfig] = post.mock.calls[0];
     expect(url).toBe('/scraping/runs');
     expect(payload.scraper).toBe('paperclub');
     expect(requestConfig.headers['X-Api-Key']).toBe('k');
+  });
+
+  it('uses the fixed recipient list unless SCRAPING_RUNS_NOTIFY_EMAIL overrides it', async () => {
+    const post = jest.fn().mockResolvedValue({});
+
+    const fixed = new ScrapingRunReporterService(
+      config({ SCRAPING_RUNS_API_KEY: 'k' }) as any,
+      { post } as any,
+    );
+    await fixed.start('paperclub').finish({ successCount: 1 });
+    expect(post.mock.calls[0][1].notify_email).toEqual(DEFAULT_NOTIFY_EMAIL);
+
+    const overridden = new ScrapingRunReporterService(
+      config({
+        SCRAPING_RUNS_API_KEY: 'k',
+        SCRAPING_RUNS_NOTIFY_EMAIL: 'a@rankwell.fr, b@rankwell.fr',
+      }) as any,
+      { post } as any,
+    );
+    await overridden.start('paperclub').finish({ successCount: 1 });
+    expect(post.mock.calls[1][1].notify_email).toEqual([
+      'a@rankwell.fr',
+      'b@rankwell.fr',
+    ]);
   });
 
   it('skips the request when no API key is configured', async () => {
@@ -144,7 +184,7 @@ describe('ScrapingRunReporterService', () => {
       { post } as any,
     );
 
-    await service.start('paperclub', 'target').finish({ successCount: 1 });
+    await service.start('paperclub').finish({ successCount: 1 });
 
     expect(post).not.toHaveBeenCalled();
   });
@@ -157,7 +197,7 @@ describe('ScrapingRunReporterService', () => {
     );
 
     await expect(
-      service.start('paperclub', 'target').finish({ successCount: 1 }),
+      service.start('paperclub').finish({ successCount: 1 }),
     ).resolves.toBeUndefined();
   });
 
@@ -167,7 +207,7 @@ describe('ScrapingRunReporterService', () => {
       config({ SCRAPING_RUNS_API_KEY: 'k' }) as any,
       { post } as any,
     );
-    const run: ScrapingRun = service.start('netlink', 'page 1');
+    const run: ScrapingRun = service.start('netlink');
 
     await run.finish({ successCount: 3 });
     await run.fail(new Error('late'));
