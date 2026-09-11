@@ -79,20 +79,21 @@ which day-of-month page gets scraped.
 | Job | Schedule (Paris) | Notes |
 |-----|------------------|-------|
 | Netlink scraper | daily 23:00 | page number = day of month |
-| DomDetailer | last day of month, 23:00 | paginates all netlinks |
-| Paper.club + RocketLinks | 5 days before month end, 02:00 | 26th/25th/23rd depending on the month; runs the two CLIs as child processes, RocketLinks after Paper.club finishes |
+| Paper.club → RocketLinks → DomDetailer | 5 days before month end, 02:00 | 26th/25th/23rd depending on the month; each step starts when the previous finishes |
 
-The marketplace job spawns `dist/cli/scrape-paperclub.js` then
-`dist/cli/scrape-rocketlinks.js` (with `--max-old-space-size=4096`) rather than
-scraping in-process: PM2 restarts the scheduler at 2 GB, and a RocketLinks run
-would take the whole schedule down with it. Their output lands in the PM2 logs
-and each one reports its own run to `/scraping/runs`.
+The monthly job spawns `dist/cli/scrape-paperclub.js` then
+`dist/cli/scrape-rocketlinks.js` (with `--max-old-space-size=4096`) as child
+processes rather than scraping in-process: PM2 restarts the scheduler at 2 GB,
+and a RocketLinks run would take the whole schedule down with it. Their output
+lands in the PM2 logs and each one reports its own run to `/scraping/runs`.
+DomDetailer (API-only, light) then runs in-process and reports too. A failed
+step does not stop the next one — they are independent.
 
-To run it by hand (same code path as the cron, ~15 min for Paper.club, hours
-for RocketLinks):
+To run the whole sequence by hand (same code path as the cron; ~15 min for
+Paper.club, hours for RocketLinks, ~15 min for DomDetailer):
 
 ```bash
-cd /opt/rankwell-scrape && node -e "require('./dist/main').runMarketplaceScrapersJob()"
+cd /opt/rankwell-scrape && node -e "require('./dist/main').runMonthlyScrapersJob()"
 ```
 
 Only ever run these on **one** host. Two instances would scrape the same page

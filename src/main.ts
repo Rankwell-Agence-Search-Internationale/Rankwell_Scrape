@@ -214,10 +214,6 @@ async function runDomDetailerJob() {
   }
 }
 
-function isLastDayOfMonth(): boolean {
-  return daysUntilEndOfMonth() === 0;
-}
-
 /**
  * Run one of the compiled CLI scrapers as a child process and resolve with
  * its exit code. The CLIs already report their run to /scraping/runs, so the
@@ -254,13 +250,16 @@ function runCliJob(
 }
 
 /**
- * Monthly marketplace catalog refresh: Paper.club, then RocketLinks once it
- * finishes, so the two browser-and-API-heavy jobs never overlap each other or
- * the 23:00 netlink run on a 2-CPU host.
+ * The monthly sequence: Paper.club, then RocketLinks, then DomDetailer, each
+ * starting when the previous one has finished (whatever its outcome — they
+ * are independent) so the heavy jobs never overlap each other or the 23:00
+ * netlink run on a 2-CPU host. DomDetailer is API-only and light, so it runs
+ * in-process; the two marketplace scrapers run as child processes.
  */
-async function runMarketplaceScrapersJob() {
+async function runMonthlyScrapersJob() {
   await runCliJob('paperclub', 'scrape-paperclub.js');
   await runCliJob('rocketlinks', 'scrape-rocketlinks.js', [], ['--max-old-space-size=4096']);
+  await runDomDetailerJob();
 }
 
 /**
@@ -273,29 +272,19 @@ function initCronJobs() {
     runNetlinkScraperJob();
   });
 
-  // Run DomDetailer on last day of month at 11 PM
-  // Schedule runs on 28-31, but only executes if it's actually the last day
-  cron.schedule('0 23 28-31 * *', () => {
-    if (isLastDayOfMonth()) {
-      logger.log('Cron triggered: Running DomDetailer on last day of month at 11 PM');
-      runDomDetailerJob();
-    }
-  });
-
-  // Refresh the Paper.club and RocketLinks catalogs monthly, 5 days before the
-  // end of the month, at 2 AM. That date is the 23rd–26th depending on the
-  // month, so the schedule covers that window and the handler checks the day.
+  // Monthly: Paper.club, RocketLinks, then DomDetailer, 5 days before the end
+  // of the month at 2 AM. That date is the 23rd–26th depending on the month,
+  // so the schedule covers that window and the handler checks the day.
   cron.schedule('0 2 23-26 * *', () => {
     if (daysUntilEndOfMonth() === 5) {
-      logger.log('Cron triggered: Running Paper.club + RocketLinks scrapers (5 days before month end) at 2 AM');
-      runMarketplaceScrapersJob();
+      logger.log('Cron triggered: Running monthly Paper.club -> RocketLinks -> DomDetailer sequence (5 days before month end) at 2 AM');
+      runMonthlyScrapersJob();
     }
   });
 
   logger.log('Cron jobs initialized:');
   logger.log('  - Netlink scraper: Daily at 11 PM');
-  logger.log('  - DomDetailer: Last day of month at 11 PM');
-  logger.log('  - Paper.club + RocketLinks: 5 days before month end at 2 AM');
+  logger.log('  - Paper.club -> RocketLinks -> DomDetailer: 5 days before month end at 2 AM');
 }
 
 /**
@@ -415,4 +404,4 @@ if (require.main === module) {
   }
 }
 
-export { bootstrap, testNetlinkScraper, testDomDetailer, runCliJob, runMarketplaceScrapersJob };
+export { bootstrap, testNetlinkScraper, testDomDetailer, runCliJob, runMonthlyScrapersJob };
