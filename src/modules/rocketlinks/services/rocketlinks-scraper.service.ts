@@ -578,7 +578,7 @@ export class RocketLinksScraperService {
   ): Promise<{
     totalSites: number;
     totalPages: number;
-    priceRangeResults: Array<{ minPrice: number; maxPrice: number; sites: number; pages: number }>;
+    priceRangeResults: Array<{ minPrice: number; maxPrice: number; sites: number; pages: number; error?: string }>;
   }> {
     const {
       delayBetweenPages = 2000,
@@ -593,7 +593,7 @@ export class RocketLinksScraperService {
     this.logger.log(`Total price ranges: ${priceRanges.length}`);
     this.logger.log('#'.repeat(60));
 
-    const priceRangeResults: Array<{ minPrice: number; maxPrice: number; sites: number; pages: number }> = [];
+    const priceRangeResults: Array<{ minPrice: number; maxPrice: number; sites: number; pages: number; error?: string }> = [];
     let totalSites = 0;
     let totalPages = 0;
 
@@ -633,6 +633,7 @@ export class RocketLinksScraperService {
           maxPrice,
           sites: 0,
           pages: 0,
+          error: error.message,
         });
       }
 
@@ -670,7 +671,7 @@ export class RocketLinksScraperService {
   }): Promise<{
     totalCategories: number;
     totalSites: number;
-    categoryResults: Array<{ category: string; sites: number; pages: number }>;
+    categoryResults: Array<{ category: string; sites: number; pages: number; error?: string }>;
   }> {
     const {
       delayBetweenPages = 2000,
@@ -694,7 +695,7 @@ export class RocketLinksScraperService {
     }
     this.logger.log('='.repeat(60));
 
-    const categoryResults: Array<{ category: string; sites: number; pages: number }> = [];
+    const categoryResults: Array<{ category: string; sites: number; pages: number; error?: string }> = [];
     let totalSites = 0;
 
     for (let i = 0; i < categories.length; i++) {
@@ -749,6 +750,7 @@ export class RocketLinksScraperService {
           category: category.id,
           sites: 0,
           pages: 0,
+          error: error.message,
         });
       }
 

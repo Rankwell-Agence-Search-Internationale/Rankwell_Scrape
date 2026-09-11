@@ -6,6 +6,7 @@ import { BQSCalculatorService } from '../../scoring/bqs-calculator.service';
 import { DatabaseService } from '../../common/database.service';
 import { LightpandaService } from '../../common/lightpanda.service';
 import { DashboardHttpClient } from '../../common/dashboard-http-client.service';
+import { ScrapingRunReporterService } from '../../common/scraping-run-reporter.service';
 
 /**
  * RocketLinks Module
@@ -25,12 +26,14 @@ import { DashboardHttpClient } from '../../common/dashboard-http-client.service'
     DatabaseService,
     LightpandaService,
     DashboardHttpClient,
+    ScrapingRunReporterService,
   ],
   exports: [
     RocketLinksScraperService,
     DatabaseService,
     LightpandaService,
     DashboardHttpClient,
+    ScrapingRunReporterService,
   ],
 })
 export class RocketLinksModule {}

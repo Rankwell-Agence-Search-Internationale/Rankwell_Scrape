@@ -18,6 +18,8 @@ import { AppModule } from '../app.module';
 import { RocketLinksScraperService } from '../modules/rocketlinks/services/rocketlinks-scraper.service';
 import { LightpandaService } from '../common/lightpanda.service';
 import { ROCKETLINKS_CATEGORIES } from '../config/rocketlinks-categories.config';
+import { ScrapingRunReporterService, ScrapingRunOutcome } from '../common/scraping-run-reporter.service';
+import { ConfigService } from '@nestjs/config';
 
 async function main() {
   console.log('\n' + '='.repeat(60));
@@ -75,6 +77,15 @@ async function main() {
     // Get services
     const scraperService = app.get(RocketLinksScraperService);
     const browserService = app.get(LightpandaService);
+    const reporter = app.get(ScrapingRunReporterService);
+    const baseUrl = app.get(ConfigService).get<string>('ROCKETLINKS_URL', 'https://www.rocketlinks.net');
+
+    // One run per invocation, started before login so a login failure is
+    // reported as a failed job too. --login is a connectivity check, not a job.
+    const target = options.scrapeAll
+      ? `${baseUrl}/catalog/all`
+      : `${baseUrl}/catalog/all/category:${options.category}`;
+    const run = options.loginOnly ? null : reporter.start('rocketlinks', target);
 
     try {
       // Step 1: Login to RocketLinks
@@ -129,6 +140,26 @@ async function main() {
         console.log(`\nAll categories complete!`);
         console.log(`Total categories: ${result.totalCategories}`);
         console.log(`Total sites saved: ${result.totalSites}`);
+
+        const outcome: ScrapingRunOutcome = {
+          successCount: result.totalSites,
+          failed: result.categoryResults
+            .filter(r => r.error)
+            .map(r => ({ url: `${baseUrl}/catalog/all/category:${r.category}`, reason: r.error })),
+          details: {
+            mode: options.dateFilter ? 'date' : 'price_ranges',
+            date_filter: options.dateFilter,
+            categories: result.totalCategories,
+            by_category: result.categoryResults.map(r => ({ category: r.category, sites: r.sites, pages: r.pages })),
+          },
+        };
+        // Zero sites across every category is the catalog being unavailable
+        // to us (an interstitial, a redesign, a block), not an empty market.
+        if (result.totalSites === 0 && result.totalCategories > 0) {
+          await run.fail(new Error(`0 sites returned across ${result.totalCategories} categories`), outcome);
+        } else {
+          await run.finish(outcome);
+        }
       } else {
         // Scrape single category
         const modeDesc = options.dateFilter
@@ -146,6 +177,18 @@ async function main() {
           console.log(`\nScraping complete!`);
           console.log(`Total pages: ${result.totalPages}`);
           console.log(`Total sites saved: ${result.totalSites}`);
+
+          await run.finish({
+            successCount: result.totalSites,
+            failed: [],
+            details: {
+              mode: 'date',
+              date_filter: options.dateFilter,
+              category: options.category,
+              pages: result.totalPages,
+              ...(result.totalSites === 0 ? { note: 'no sites found' } : {}),
+            },
+          });
         } else {
           // Price range mode
           const result = await scraperService.scrapeAllPriceRangesForCategory(options.category, {
@@ -155,6 +198,23 @@ async function main() {
           console.log(`\nScraping complete!`);
           console.log(`Total pages: ${result.totalPages}`);
           console.log(`Total sites saved: ${result.totalSites}`);
+
+          await run.finish({
+            successCount: result.totalSites,
+            failed: result.priceRangeResults
+              .filter(r => r.error)
+              .map(r => ({
+                url: `${target}/minSAP:${r.minPrice}/maxSAP:${r.maxPrice}`,
+                reason: r.error,
+              })),
+            details: {
+              mode: 'price_ranges',
+              category: options.category,
+              pages: result.totalPages,
+              price_ranges: result.priceRangeResults.length,
+              ...(result.totalSites === 0 ? { note: 'no sites found' } : {}),
+            },
+          });
         }
       }
 
@@ -169,6 +229,8 @@ async function main() {
     } catch (error) {
       console.error('\nError during scraping:');
       console.error(error.message);
+
+      if (run) await run.fail(error);
 
       // Cleanup on error
       try {

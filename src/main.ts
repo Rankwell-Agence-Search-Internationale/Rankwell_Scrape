@@ -2,10 +2,12 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 import * as cron from 'node-cron';
-import { NetlinkScraperService } from './modules/paperclub/services/netlink-scraper.service';
+import { NetlinkScraperService, ScrapedNetlinkData } from './modules/paperclub/services/netlink-scraper.service';
 import { NetlinkService } from './modules/paperclub/services/netlink.service';
 import { DomDetailerService } from './common/domdetailer.service';
 import { DashboardHttpClient } from './common/dashboard-http-client.service';
+import { ScrapingRunReporterService } from './common/scraping-run-reporter.service';
+import { ConfigService } from '@nestjs/config';
 
 const logger = new Logger('Main');
 
@@ -36,17 +38,28 @@ async function runNetlinkScraperJob() {
   const app = await NestFactory.createApplicationContext(AppModule);
   const scraperService = app.get(NetlinkScraperService);
   const netlinkService = app.get(NetlinkService);
+  const reporter = app.get(ScrapingRunReporterService);
+  const dashboardBaseUrl = app.get(ConfigService).get<string>('DASHBOARD_BASE_URL', '');
+
+  const run = reporter.start(
+    'netlink',
+    `${dashboardBaseUrl}/netlink/all/paginated?page=${dayOfMonth}&limit=200`,
+  );
+  // Kept outside the try so a failure after scraping can still report progress
+  let results: ScrapedNetlinkData[] = [];
+  let totalPages: number | undefined;
 
   try {
     // Fetch page based on day of month
     logger.log(`Fetching page ${dayOfMonth} with limit 200...`);
     const response = await netlinkService.fetchPage(dayOfMonth, 200);
     const netlinks = response.data;
+    totalPages = response.pagination.totalPages;
 
-    logger.log(`Fetched ${netlinks.length} netlinks (Page ${dayOfMonth}/${response.pagination.totalPages}). Starting scraping...`);
+    logger.log(`Fetched ${netlinks.length} netlinks (Page ${dayOfMonth}/${totalPages}). Starting scraping...`);
 
     // Scrape them
-    const results = await scraperService.scrapeNetlinks(netlinks, {
+    results = await scraperService.scrapeNetlinks(netlinks, {
       concurrency: 3,
       timeout: 30000,
       retries: 2,
@@ -63,11 +76,29 @@ async function runNetlinkScraperJob() {
     await scraperService.postBatchResults(results);
 
     logger.log(`Netlink scraper completed - Page: ${dayOfMonth}, Total: ${results.length}, Success: ${successCount}, Failed: ${results.length - successCount}`);
+
+    await run.finish({
+      ...netlinkOutcome(results),
+      details: { page: dayOfMonth, total_pages: totalPages, fetched: netlinks.length },
+    });
   } catch (error) {
     logger.error('Netlink scraper job failed:', error.message);
+    await run.fail(error, {
+      ...netlinkOutcome(results),
+      details: { page: dayOfMonth, total_pages: totalPages },
+    });
   } finally {
     await app.close();
   }
+}
+
+function netlinkOutcome(results: ScrapedNetlinkData[]) {
+  return {
+    successCount: results.filter(r => r.success).length,
+    failed: results
+      .filter(r => !r.success)
+      .map(r => ({ url: r.url, reason: r.error || 'unknown error' })),
+  };
 }
 
 /**
@@ -80,15 +111,20 @@ async function runDomDetailerJob() {
   const domDetailerService = app.get(DomDetailerService);
   const netlinkService = app.get(NetlinkService);
   const dashboardClient = app.get(DashboardHttpClient);
+  const reporter = app.get(ScrapingRunReporterService);
+  const dashboardBaseUrl = app.get(ConfigService).get<string>('DASHBOARD_BASE_URL', '');
 
   const BATCH_SIZE = 100;
   const CONCURRENCY = 3;
   const DELAY = 500;
 
+  const run = reporter.start('domdetailer', `${dashboardBaseUrl}/netlink/all/paginated (all pages)`);
+
   let currentPage = 1;
   let totalProcessed = 0;
   let totalSuccess = 0;
   let totalFailed = 0;
+  const failures: Array<{ url: string; reason: string }> = [];
   const startTime = Date.now();
 
   try {
@@ -155,6 +191,9 @@ async function runDomDetailerJob() {
       totalProcessed += results.length;
       totalSuccess += pageSuccess;
       totalFailed += results.length - pageSuccess;
+      for (const r of results) {
+        if (!r.success) failures.push({ url: r.url, reason: r.error || 'unknown error' });
+      }
 
       logger.log(`Page ${currentPage} done: ${pageSuccess}/${results.length} success. Total: ${totalProcessed}/${totalItems}`);
 
@@ -164,8 +203,19 @@ async function runDomDetailerJob() {
 
     const duration = (Date.now() - startTime) / 1000 / 60;
     logger.log(`DomDetailer completed - Total: ${totalProcessed}, Success: ${totalSuccess}, Failed: ${totalFailed}, Duration: ${duration.toFixed(2)} minutes`);
+
+    await run.finish({
+      successCount: totalSuccess,
+      failed: failures,
+      details: { pages: currentPage - 1, processed: totalProcessed },
+    });
   } catch (error) {
     logger.error('DomDetailer job failed:', error.message);
+    await run.fail(error, {
+      successCount: totalSuccess,
+      failed: failures,
+      details: { pages_completed: currentPage - 1, processed: totalProcessed },
+    });
   } finally {
     await app.close();
   }

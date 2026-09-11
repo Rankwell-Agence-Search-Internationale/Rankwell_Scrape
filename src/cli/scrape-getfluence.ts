@@ -13,6 +13,8 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { GetfluenceScraperService } from '../modules/getfluence/services/getfluence-scraper.service';
 import { LightpandaService } from '../common/lightpanda.service';
+import { ScrapingRunReporterService } from '../common/scraping-run-reporter.service';
+import { ConfigService } from '@nestjs/config';
 
 async function main() {
   console.log('\n' + '='.repeat(60));
@@ -49,6 +51,11 @@ async function main() {
     // Get services
     const scraperService = app.get(GetfluenceScraperService);
     const browserService = app.get(LightpandaService);
+    const reporter = app.get(ScrapingRunReporterService);
+    const baseUrl = app.get(ConfigService).get<string>('GETFLUENCE_URL', 'https://app.getfluence.com');
+
+    // Started before login so a login failure is reported as a failed job.
+    const run = options.loginOnly ? null : reporter.start('getfluence', baseUrl);
 
     try {
       // Step 1: Login to Getfluence
@@ -77,6 +84,23 @@ async function main() {
       console.log(`Total categories: ${result.categoryResults.length}`);
       console.log(`Total sites: ${result.totalSites}`);
 
+      const outcome = {
+        successCount: result.totalSites,
+        failed: result.categoryResults
+          .filter(r => r.error)
+          .map(r => ({ url: `${baseUrl} category:${r.category}`, reason: r.error })),
+        details: {
+          categories: result.categoryResults.length,
+          max_pages: options.maxPages,
+          by_category: result.categoryResults.map(r => ({ category: r.category, sites: r.sites })),
+        },
+      };
+      if (result.totalSites === 0 && result.categoryResults.length > 0) {
+        await run.fail(new Error(`0 sites returned across ${result.categoryResults.length} categories`), outcome);
+      } else {
+        await run.finish(outcome);
+      }
+
       // Cleanup
       await scraperService.logout();
       await app.close();
@@ -88,6 +112,8 @@ async function main() {
     } catch (error) {
       console.error('\nError during scraping:');
       console.error(error.message);
+
+      if (run) await run.fail(error);
 
       // Cleanup on error
       try {

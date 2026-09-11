@@ -38,7 +38,11 @@ export class PaperClubScraperService {
     saveToFile?: boolean;
     sendToAPI?: boolean;
     categories?: Category[];
-  }): Promise<{ total: number; categories: any[] }> {
+  }): Promise<{
+    total: number;
+    categories: any[];
+    failed: Array<{ category: string; category_id: string; error: string }>;
+  }> {
     const {
       calculateBQS = true,
       saveToFile = true,
@@ -53,6 +57,7 @@ export class PaperClubScraperService {
     this.logger.log('');
 
     const allData = [];
+    const failed: Array<{ category: string; category_id: string; error: string }> = [];
 
     try {
       // Authenticate first
@@ -71,6 +76,7 @@ export class PaperClubScraperService {
           this.logger.error(
             `Failed to scrape category ${category.name}: ${error.message}`,
           );
+          failed.push({ category: category.name, category_id: category.id, error: error.message });
         }
       }
 
@@ -85,6 +91,7 @@ export class PaperClubScraperService {
       return {
         total: allData.reduce((sum, cat) => sum + cat.total, 0),
         categories: allData,
+        failed,
       };
     } catch (error) {
       this.logger.error(`Error in scrapeAllCategories: ${error.message}`);

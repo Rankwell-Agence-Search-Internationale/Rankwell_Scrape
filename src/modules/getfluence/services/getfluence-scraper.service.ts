@@ -496,7 +496,7 @@ export class GetfluenceScraperService {
   async scrapeAllCategories(options?: {
     sendToAPI?: boolean;
     maxPages?: number; // 0 = unlimited (default), >0 = stop after N pages per category
-  }): Promise<{ totalSites: number; categoryResults: Array<{ category: string; sites: number }> }> {
+  }): Promise<{ totalSites: number; categoryResults: Array<{ category: string; sites: number; error?: string }> }> {
     const { sendToAPI = true, maxPages = 0 } = options || {};
 
     if (!this.isLoggedIn || !this.context) {
@@ -518,7 +518,7 @@ export class GetfluenceScraperService {
 
     // Step 2: Loop through each category
     // Panel is already open from the initial read — use it for the first category
-    const categoryResults: Array<{ category: string; sites: number }> = [];
+    const categoryResults: Array<{ category: string; sites: number; error?: string }> = [];
     let totalSites = 0;
     const allSites: GetfluenceSiteRaw[] = [];
     let previousCategoryName: string | null = null;
@@ -537,7 +537,7 @@ export class GetfluenceScraperService {
           const panelOpened = await this.openCategoriesDropdown(page);
           if (!panelOpened) {
             this.logger.warn(`Could not open dropdown for ${categoryName}, skipping`);
-            categoryResults.push({ category: categoryName, sites: 0 });
+            categoryResults.push({ category: categoryName, sites: 0, error: 'could not open categories dropdown' });
             continue;
           }
 
@@ -564,7 +564,7 @@ export class GetfluenceScraperService {
         const selected = await this.clickCategoryByName(page, categoryName);
         if (!selected) {
           this.logger.warn(`Could not select ${categoryName}, skipping`);
-          categoryResults.push({ category: categoryName, sites: 0 });
+          categoryResults.push({ category: categoryName, sites: 0, error: 'could not select category in dropdown' });
           continue;
         }
         this.logger.log(`Selected: ${categoryName}`);
@@ -585,7 +585,7 @@ export class GetfluenceScraperService {
 
       } catch (error) {
         this.logger.error(`Error scraping ${categoryName}: ${error.message}`);
-        categoryResults.push({ category: categoryName, sites: 0 });
+        categoryResults.push({ category: categoryName, sites: 0, error: error.message });
       }
     }
 

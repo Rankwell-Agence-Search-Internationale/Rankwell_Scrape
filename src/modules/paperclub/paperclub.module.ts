@@ -10,6 +10,7 @@ import { BQSCalculatorService } from '../../scoring/bqs-calculator.service';
 import { DatabaseService } from '../../common/database.service';
 import { LightpandaService } from '../../common/lightpanda.service';
 import { DashboardHttpClient } from '../../common/dashboard-http-client.service';
+import { ScrapingRunReporterService } from '../../common/scraping-run-reporter.service';
 import { DomDetailerService } from '../../common/domdetailer.service';
 import { GoogleSearchConsoleService } from '../../common/google-search-console.service';
 import { FirecrawlService } from '../../common/firecrawl.service';
@@ -38,6 +39,7 @@ import { FirecrawlService } from '../../common/firecrawl.service';
     DatabaseService,
     LightpandaService,
     DashboardHttpClient,
+    ScrapingRunReporterService,
     DomDetailerService,
     GoogleSearchConsoleService,
     FirecrawlService,
@@ -51,6 +53,7 @@ import { FirecrawlService } from '../../common/firecrawl.service';
     DatabaseService,
     LightpandaService,
     DashboardHttpClient,
+    ScrapingRunReporterService,
     DomDetailerService,
     GoogleSearchConsoleService,
     FirecrawlService,

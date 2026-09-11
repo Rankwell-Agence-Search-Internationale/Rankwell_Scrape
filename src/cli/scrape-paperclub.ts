@@ -14,6 +14,8 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { PaperClubScraperService } from '../modules/paperclub/services/paperclub-scraper.service';
 import { DatabaseService } from '../common/database.service';
+import { ScrapingRunReporterService } from '../common/scraping-run-reporter.service';
+import { ConfigService } from '@nestjs/config';
 
 async function main() {
   console.log('\n' + '='.repeat(60));
@@ -45,6 +47,8 @@ async function main() {
     // Get services
     const scraperService = app.get(PaperClubScraperService);
     const dbService = app.get(DatabaseService);
+    const reporter = app.get(ScrapingRunReporterService);
+    const apiUrl = app.get(ConfigService).get<string>('PAPER_CLUB_API_URL', 'https://app.paper.club/api');
 
     // Truncate database if requested
     if (options.truncateFirst && options.sendToAPI) {
@@ -56,11 +60,39 @@ async function main() {
     // Run the scraper
     // NOTE: Data is now sent to API after EACH category is scraped
     console.log('Starting scraping process...\n');
-    const scrapedData = await scraperService.scrapeAllCategories({
-      calculateBQS: options.calculateBQS,
-      saveToFile: options.saveToFile,
-      sendToAPI: options.sendToAPI,
-    });
+    const run = reporter.start('paperclub', apiUrl);
+    let scrapedData: Awaited<ReturnType<PaperClubScraperService['scrapeAllCategories']>>;
+    try {
+      scrapedData = await scraperService.scrapeAllCategories({
+        calculateBQS: options.calculateBQS,
+        saveToFile: options.saveToFile,
+        sendToAPI: options.sendToAPI,
+      });
+    } catch (error) {
+      await run.fail(error);
+      throw error;
+    }
+
+    // A full run that yields nothing means the API stopped answering, not
+    // that Paper.club emptied its catalog — report it as a failure so it alerts.
+    const categoriesAttempted = scrapedData.categories.length + scrapedData.failed.length;
+    const outcome = {
+      successCount: scrapedData.total,
+      failed: scrapedData.failed.map(f => ({
+        url: `${apiUrl} category:${f.category_id} (${f.category})`,
+        reason: f.error,
+      })),
+      details: {
+        categories_scraped: scrapedData.categories.length,
+        categories_failed: scrapedData.failed.length,
+        send_to_api: options.sendToAPI,
+      },
+    };
+    if (scrapedData.total === 0 && categoriesAttempted > 0) {
+      await run.fail(new Error(`0 sites returned across ${categoriesAttempted} categories`), outcome);
+    } else {
+      await run.finish(outcome);
+    }
 
     // Print final statistics
     const stats = scraperService.getStatistics(scrapedData.categories);
