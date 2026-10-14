@@ -128,3 +128,55 @@ describe('NetlinkScraperService confirm before reporting a link gone', () => {
     expect((await run()).status).toBe(3);
   });
 });
+
+describe('NetlinkScraperService reading pages that resist', () => {
+  const url = 'https://media.fr/article';
+  const landing = 'https://client.fr/page';
+  const service = new NetlinkScraperService({} as any, {} as any, {} as any, {} as any);
+  const extract = (page: any) => (service as any).extractData(page, url, landing);
+  const pageData = {
+    domLinks: [{ href: landing, text: 'client', outerHTML: '<a>', rel: '' }],
+    scripts: [] as string[],
+  };
+
+  function fakePage(evaluate: jest.Mock) {
+    return {
+      waitForSelector: jest.fn().mockResolvedValue(undefined),
+      waitForTimeout: jest.fn().mockResolvedValue(undefined),
+      waitForLoadState: jest.fn().mockResolvedValue(undefined),
+      url: () => url,
+      evaluate,
+    };
+  }
+
+  it('only needs <body> to exist, not to be visible (sites that hide it until their JS runs)', async () => {
+    const page = fakePage(jest.fn().mockResolvedValue(pageData));
+    await extract(page);
+    expect(page.waitForSelector).toHaveBeenCalledWith('body', expect.objectContaining({ state: 'attached' }));
+  });
+
+  it('reads the page again after a JavaScript redirect destroys it mid-read', async () => {
+    const evaluate = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation'))
+      .mockResolvedValueOnce(pageData);
+    const page = fakePage(evaluate);
+
+    const result = await extract(page);
+
+    expect(page.waitForLoadState).toHaveBeenCalled();
+    expect(result.foundLink.matched).toBe(true);
+  });
+
+  it('gives up after repeated navigations instead of looping', async () => {
+    const evaluate = jest.fn().mockRejectedValue(new Error('Execution context was destroyed'));
+    await expect(extract(fakePage(evaluate))).rejects.toThrow('Execution context was destroyed');
+    expect(evaluate.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it('does not retry unrelated errors', async () => {
+    const evaluate = jest.fn().mockRejectedValue(new Error('Target page, context or browser has been closed'));
+    await expect(extract(fakePage(evaluate))).rejects.toThrow('has been closed');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+});

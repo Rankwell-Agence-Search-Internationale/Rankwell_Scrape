@@ -381,30 +381,57 @@ export class NetlinkScraperService {
   }
 
   /**
+   * All links on the page, plus inline scripts that may carry the full
+   * (paywalled) article as markup.
+   *
+   * Some pages redirect themselves with JavaScript just after load
+   * (domcontentloaded resolves before the redirect), which destroys the page
+   * mid-read. Wait for the new page and read that one - it is where a
+   * visitor ends up - rather than failing the whole netlink.
+   */
+  private async readLinksSurvivingNavigation(
+    page: Page,
+  ): Promise<{ domLinks: PageLink[]; scripts: string[] }> {
+    const maxAttempts = 3;
+
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await page.evaluate(() => ({
+          domLinks: Array.from(document.querySelectorAll('a')).map(link => ({
+            href: link.href,
+            text: link.textContent?.trim() || '',
+            outerHTML: link.outerHTML,
+            rel: link.getAttribute('rel') || '',
+          })),
+          scripts: Array.from(document.querySelectorAll('script:not([src])'))
+            .map(s => s.textContent || '')
+            .filter(t => /href/i.test(t)),
+        }));
+      } catch (error) {
+        const navigated = /Execution context was destroyed|navigation/i.test(error.message ?? '');
+        if (!navigated || attempt >= maxAttempts) throw error;
+
+        this.logger.debug(`Page navigated while reading ${page.url()}, reading the new page`);
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
    * Extract data from a page - find the best <a> pointing to the client
    * (rules in link-matching.ts, shared with the single-netlink debug script)
    */
   private async extractData(page: Page, url: string, landingPage?: string): Promise<Partial<ScrapedNetlinkData>> {
     try {
-      // Wait for page to load
-      await page.waitForSelector('body', { timeout: 5000 });
+      // Wait for page to load. 'attached', not the default 'visible': some
+      // themes keep <body> hidden until their scripts run, and the links are
+      // in the DOM either way.
+      await page.waitForSelector('body', { state: 'attached', timeout: 5000 });
 
       // Wait a bit for dynamic content to load
       await page.waitForTimeout(2000);
 
-      // Get all links from the page with rel attribute, plus inline scripts
-      // that may carry the full (paywalled) article as markup
-      const { domLinks, scripts } = await page.evaluate(() => ({
-        domLinks: Array.from(document.querySelectorAll('a')).map(link => ({
-          href: link.href,
-          text: link.textContent?.trim() || '',
-          outerHTML: link.outerHTML,
-          rel: link.getAttribute('rel') || '',
-        })),
-        scripts: Array.from(document.querySelectorAll('script:not([src])'))
-          .map(s => s.textContent || '')
-          .filter(t => /href/i.test(t)),
-      }));
+      const { domLinks, scripts } = await this.readLinksSurvivingNavigation(page);
 
       // allLinksCount stays DOM-only: looksBlocked() relies on it to spot
       // near-empty challenge pages
@@ -497,10 +524,13 @@ export class NetlinkScraperService {
 
             // Get status code from response
             const statusCode = response?.status();
-            const finalUrl = page.url();
 
             // Extract data using the extractData method
             const extractedData = await this.extractData(page, url, landingPage);
+
+            // Read after extraction: a JavaScript redirect (e.g. a removed
+            // article sent home) only happens after domcontentloaded
+            const finalUrl = page.url();
 
             return {
               ...extractedData,

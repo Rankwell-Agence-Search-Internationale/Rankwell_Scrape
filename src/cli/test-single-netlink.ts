@@ -78,7 +78,7 @@ async function testSingleNetlink() {
       console.log(`✓ Final URL: ${finalUrl}\n`);
 
       // Wait for body
-      await page.waitForSelector('body', { timeout: 5000 });
+      await page.waitForSelector('body', { state: 'attached', timeout: 5000 });
 
       // Get and save page source
       const pageSource = await page.content();
