@@ -8,3 +8,18 @@ export function daysUntilEndOfMonth(date: Date = new Date()): number {
   const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   return lastDay - date.getDate();
 }
+
+/**
+ * The slice [start, end) of a `total`-item list that `date` is responsible for
+ * when the list is spread evenly over its month. Every index falls in exactly
+ * one day of any month length, and daily sizes differ by at most one, so a
+ * list checked this way is fully covered each month without idle days.
+ */
+export function dailyShare(total: number, date: Date = new Date()): { start: number; end: number } {
+  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const day = date.getDate();
+  return {
+    start: Math.floor(((day - 1) * total) / daysInMonth),
+    end: Math.floor((day * total) / daysInMonth),
+  };
+}

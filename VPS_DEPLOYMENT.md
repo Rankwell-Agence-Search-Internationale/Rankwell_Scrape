@@ -78,7 +78,7 @@ which day-of-month page gets scraped.
 
 | Job | Schedule (Paris) | Notes |
 |-----|------------------|-------|
-| Netlink scraper | daily 23:00 | page number = day of month |
+| Netlink scraper | daily 23:00 | all netlinks spread evenly over the month (~65/day), oldest id first |
 | Paper.club → RocketLinks → DomDetailer | 5 days before month end, 02:00 | 26th/25th/23rd depending on the month; each step starts when the previous finishes |
 
 The monthly job spawns `dist/cli/scrape-paperclub.js` then

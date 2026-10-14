@@ -9,7 +9,7 @@ import { NetlinkService } from './modules/paperclub/services/netlink.service';
 import { DomDetailerService } from './common/domdetailer.service';
 import { DashboardHttpClient } from './common/dashboard-http-client.service';
 import { ScrapingRunReporterService } from './common/scraping-run-reporter.service';
-import { daysUntilEndOfMonth } from './common/calendar';
+import { daysUntilEndOfMonth, dailyShare } from './common/calendar';
 
 const logger = new Logger('Main');
 
@@ -31,11 +31,15 @@ async function bootstrap() {
 
 /**
  * Run the netlink scraper cron job
- * Page = day of month (1-31), so each day scrapes a different page
+ *
+ * The full list is spread evenly over the month (dailyShare), so every netlink
+ * is checked once a month at ~65/day. It is ordered oldest id first: the API
+ * returns newest first, and new purchases would otherwise shift every link
+ * across day boundaries, checking some twice and skipping others.
  */
 async function runNetlinkScraperJob() {
-  const dayOfMonth = new Date().getDate(); // 1-31
-  logger.log(`Starting scheduled netlink scraper job (Day ${dayOfMonth}, Page ${dayOfMonth})...`);
+  const today = new Date();
+  logger.log(`Starting scheduled netlink scraper job (Day ${today.getDate()})...`);
 
   const app = await NestFactory.createApplicationContext(AppModule);
   const scraperService = app.get(NetlinkScraperService);
@@ -45,16 +49,15 @@ async function runNetlinkScraperJob() {
   const run = reporter.start('netlink');
   // Kept outside the try so a failure after scraping can still report progress
   let results: ScrapedNetlinkData[] = [];
-  let totalPages: number | undefined;
 
   try {
-    // Fetch page based on day of month
-    logger.log(`Fetching page ${dayOfMonth} with limit 200...`);
-    const response = await netlinkService.fetchPage(dayOfMonth, 200);
-    const netlinks = response.data;
-    totalPages = response.pagination.totalPages;
+    const all = await netlinkService.fetchAllNetlinks({ limit: 200 });
+    all.sort((a, b) => Number(a.id) - Number(b.id));
 
-    logger.log(`Fetched ${netlinks.length} netlinks (Page ${dayOfMonth}/${totalPages}). Starting scraping...`);
+    const { start, end } = dailyShare(all.length, today);
+    const netlinks = all.slice(start, end);
+
+    logger.log(`Today's share: netlinks ${start + 1}-${end} of ${all.length} (${netlinks.length}). Starting scraping...`);
 
     // Scrape them
     results = await scraperService.scrapeNetlinks(netlinks, {
@@ -73,7 +76,7 @@ async function runNetlinkScraperJob() {
     const successCount = results.filter(r => r.success).length;
     await scraperService.postBatchResults(results);
 
-    logger.log(`Netlink scraper completed - Page: ${dayOfMonth}, Total: ${results.length}, Success: ${successCount}, Failed: ${results.length - successCount}`);
+    logger.log(`Netlink scraper completed - Day: ${today.getDate()}, Total: ${results.length}, Success: ${successCount}, Failed: ${results.length - successCount}`);
 
     await run.finish({
       ...netlinkOutcome(results),

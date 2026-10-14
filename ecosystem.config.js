@@ -23,8 +23,8 @@ module.exports = {
         ENABLE_CRON: 'true',
         CRON_TIMEZONE: 'Europe/Paris',
         // node-cron schedules in main.ts use the process timezone, so pin it
-        // here: the daily job must fire at 23:00 Paris and the "page = day of
-        // month" number must be the Paris day.
+        // here: the daily job must fire at 23:00 Paris and its share of the
+        // month must be picked by the Paris day.
         TZ: 'Europe/Paris',
         // The VPS has no X server: a headed launch dies on 'Missing X server or
         // $DISPLAY'. Pinned here because process.env beats the .env file in
