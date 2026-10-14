@@ -3,6 +3,13 @@ import { LightpandaService } from '../../../common/lightpanda.service';
 import { NetlinkService, NetlinkItem } from './netlink.service';
 import { DashboardHttpClient } from '../../../common/dashboard-http-client.service';
 import { FirecrawlService } from '../../../common/firecrawl.service';
+import {
+  PageLink,
+  pickBestLink,
+  linkTypeFromRel,
+  isRedirectToHomepage,
+  isDeadDomainError,
+} from './link-matching';
 
 import type { Page } from 'playwright-core';
 import * as fs from 'fs/promises';
@@ -46,6 +53,11 @@ export interface ScrapedNetlinkData {
   // Set when our own browser was blocked and the page was retrieved via Firecrawl
   recoveredVia?: 'firecrawl';
 
+  // Address the browser ended on after redirects
+  finalUrl?: string;
+  // The article URL now lands on the site's homepage: the article was removed
+  redirectedToHomepage?: boolean;
+
 
   [key: string]: any;
 }
@@ -88,7 +100,7 @@ export interface ScrapingStats {
 export interface NetlinkAdditionalInfo {
   netlink_id: number;
   link_type: string; // 'dofollow' | 'nofollow' | 'unknown'
-  online_status: number; // 1 = exact link found, 2 = no matching link found, 3 = site not accessible/offline, 4 = domain found but not exact URL
+  online_status: number; // 1 = exact link found, 2 = link absent / page or domain gone, 3 = not verified (blocked/unreachable), 4 = domain found but not exact URL
   status_code?: number; // HTTP status code from page response
 }
 
@@ -254,7 +266,9 @@ export class NetlinkScraperService {
     // Determine link_type from the foundLink or domainFoundLink
     let link_type = 'unknown'; // Default to unknown
 
-    if (result.success && result.foundLink?.matched && result.foundLink?.link_type) {
+    if (result.redirectedToHomepage) {
+      // The article is gone; a link found on the homepage is not the one bought
+    } else if (result.success && result.foundLink?.matched && result.foundLink?.link_type) {
       // Exact match found
       link_type = result.foundLink.link_type;
     } else if (result.success && result.domainFound && result.domainFoundLink?.link_type) {
@@ -264,14 +278,20 @@ export class NetlinkScraperService {
 
     // Determine online_status
     // 1 = exact link found & accessible (success with matched link)
-    // 2 = no matching link found at all (success but no link or domain found)
-    // 3 = site not accessible/offline (failed to scrape)
-    // 4 = domain found but not exact URL (success with domain match only)
+    // 2 = link absent: page read without it, page deleted (404/410, redirected
+    //     home) or domain gone
+    // 3 = not verified: blocked or unreachable, says nothing about the link
+    // 4 = links to the client, but not to the landing page entered
     let online_status: number;
 
     if (!result.success) {
-      // Site is not accessible or failed to scrape
-      online_status = 3;
+      // A domain that no longer resolves is gone for everyone, unlike a
+      // timeout or a block which only means we could not read it.
+      online_status = isDeadDomainError(result.error) ? 2 : 3;
+    } else if (result.redirectedToHomepage === true) {
+      // Checked before the link: a sitewide homepage link to the client is
+      // not the article link that was bought.
+      online_status = 2;
     } else if (result.foundLink?.matched === true) {
       // Exact matching link found. Checked before the status code because
       // finding the link proves we read the real article - some publishers
@@ -280,6 +300,10 @@ export class NetlinkScraperService {
     } else if (result.domainFound === true) {
       // Site is accessible and domain found but not exact URL
       online_status = 4;
+    } else if (result.statusCode === 404 || result.statusCode === 410) {
+      // The page itself is deleted - the same answer from any network, unlike
+      // a 403 - so the link is gone, not merely unverified.
+      online_status = 2;
     } else if (result.statusCode !== undefined && result.statusCode >= 400) {
       // page.goto() resolves on 4xx/5xx, so an error page (bot block, rate
       // limit, deleted page) would otherwise be parsed as a real page with no
@@ -344,95 +368,8 @@ export class NetlinkScraperService {
   }
 
   /**
-   * Helper function to normalize URL for comparison
-   */
-  private normalizeUrl(url: string): string {
-    try {
-      let normalized = url.toLowerCase().trim();
-
-      // Remove protocol
-      normalized = normalized.replace(/^https?:\/\//, '');
-      // Remove www.
-      normalized = normalized.replace(/^www\./, '');
-      // Remove trailing slash
-      normalized = normalized.replace(/\/$/, '');
-      // Remove query params and hash
-      normalized = normalized.split('?')[0].split('#')[0];
-
-      return normalized;
-    } catch (error) {
-      return url.toLowerCase().trim();
-    }
-  }
-
-  /**
-   * Check if a link URL matches the landing page URL
-   */
-  private doesUrlMatch(linkHref: string, landingPage: string): { matched: boolean; matchType?: 'exact' | 'domain' | 'subdomain' | 'partial' } {
-    if (!linkHref || !landingPage) {
-      return { matched: false };
-    }
-
-    const normalizedLink = this.normalizeUrl(linkHref);
-    const normalizedLanding = this.normalizeUrl(landingPage);
-
-    // Exact match
-    if (normalizedLink === normalizedLanding) {
-      return { matched: true, matchType: 'exact' };
-    }
-
-    // Link contains the landing page (e.g., landing is a subdirectory)
-    if (normalizedLink.includes(normalizedLanding)) {
-      return { matched: true, matchType: 'domain' };
-    }
-
-    // Landing contains the link (e.g., link is shorter/partial)
-    if (normalizedLanding.includes(normalizedLink)) {
-      return { matched: true, matchType: 'subdomain' };
-    }
-
-    // Extract domain and path separately for more flexible matching
-    const getLandingDomain = (url: string) => {
-      return url.split('/')[0];
-    };
-
-    const getPath = (url: string) => {
-      const parts = url.split('/');
-      return parts.slice(1).join('/');
-    };
-
-    const linkDomain = getLandingDomain(normalizedLink);
-    const landingDomain = getLandingDomain(normalizedLanding);
-    const linkPath = getPath(normalizedLink);
-    const landingPath = getPath(normalizedLanding);
-
-    // Same domain check
-    if (linkDomain === landingDomain) {
-      // If domains match, check if paths are similar
-      if (linkPath === landingPath) {
-        return { matched: true, matchType: 'exact' };
-      }
-      // Check if one path contains the other
-      if (linkPath && landingPath && (linkPath.includes(landingPath) || landingPath.includes(linkPath))) {
-        return { matched: true, matchType: 'partial' };
-      }
-      // If paths don't match but domains do, still consider it a domain match
-      if (linkPath && landingPath) {
-        return { matched: true, matchType: 'domain' };
-      }
-    }
-
-    // Check if link domain is part of landing domain or vice versa
-    // (handles subdomains like blog.example.com vs example.com)
-    if (linkDomain.includes(landingDomain) || landingDomain.includes(linkDomain)) {
-      return { matched: true, matchType: 'subdomain' };
-    }
-
-    return { matched: false };
-  }
-
-  /**
-   * Extract data from a page - Find <a> tag containing landing_page URL
+   * Extract data from a page - find the best <a> pointing to the client
+   * (rules in link-matching.ts, shared with the single-netlink debug script)
    */
   private async extractData(page: Page, url: string, landingPage?: string): Promise<Partial<ScrapedNetlinkData>> {
     try {
@@ -443,7 +380,7 @@ export class NetlinkScraperService {
       await page.waitForTimeout(2000);
 
       // Get all links from the page with rel attribute
-      const linksData = await page.evaluate(() => {
+      const linksData: PageLink[] = await page.evaluate(() => {
         const links = Array.from(document.querySelectorAll('a'));
         return links.map(link => ({
           href: link.href,
@@ -463,98 +400,44 @@ export class NetlinkScraperService {
         };
       }
 
-      // Find matching link
-      for (const link of linksData) {
-        const matchResult = this.doesUrlMatch(link.href, landingPage);
+      const best = pickBestLink(linksData, landingPage);
+      const notMatched = { href: '', text: '', outerHTML: '', matched: false };
 
-        if (matchResult.matched) {
-          this.logger.log(`✓ Found matching link: ${link.href} (${matchResult.matchType} match)`);
-
-          // Determine link_type based on rel attribute
-          // Rule: If rel contains "nofollow" in any combination -> nofollow
-          //       Otherwise (no rel or rel without nofollow) -> dofollow
-          let link_type = 'dofollow'; // Default
-
-          if (link.rel && link.rel.toLowerCase().includes('nofollow')) {
-            link_type = 'nofollow';
-          }
-
-          this.logger.log(`  Link type: ${link_type} (rel="${link.rel || 'none'}")`);
-
-          return {
-            allLinksCount: linksData.length,
-            foundLink: {
-              href: link.href,
-              text: link.text,
-              outerHTML: link.outerHTML,
-              matched: true,
-              matchType: matchResult.matchType,
-              rel: link.rel || undefined,
-              link_type: link_type,
-            },
-          };
-        }
+      if (!best) {
+        this.logger.warn(`No link to the client found for landing page: ${landingPage}`);
+        return { allLinksCount: linksData.length, foundLink: notMatched, domainFound: false };
       }
 
-      // No exact matching link found, check for domain-only match
-      this.logger.warn(`No exact matching link found for landing page: ${landingPage}`);
-      this.logger.log(`Checking for domain-only matches...`);
+      const { kind, link } = best;
+      const link_type = linkTypeFromRel(link.rel);
+      this.logger.log(`✓ Found ${kind === 'target' ? 'target' : 'other client page'} link: ${link.href} (${link_type}, rel="${link.rel || 'none'}")`);
 
-      // Extract domain from landing page
-      const getLandingDomain = (url: string) => {
-        const normalized = this.normalizeUrl(url);
-        return normalized.split('/')[0];
-      };
-
-      const landingDomain = getLandingDomain(landingPage);
-      this.logger.debug(`Landing page domain: ${landingDomain}`);
-
-      // Check if any link has the same domain
-      for (const link of linksData) {
-        const linkDomain = getLandingDomain(link.href);
-
-        if (linkDomain === landingDomain) {
-          this.logger.log(`✓ Found domain match: ${link.href}`);
-
-          // Determine link_type
-          let link_type = 'dofollow';
-          if (link.rel && link.rel.toLowerCase().includes('nofollow')) {
-            link_type = 'nofollow';
-          }
-
-          this.logger.log(`  Link type: ${link_type} (rel="${link.rel || 'none'}")`);
-
-          return {
-            allLinksCount: linksData.length,
-            foundLink: {
-              href: '',
-              text: '',
-              outerHTML: '',
-              matched: false,
-            },
-            domainFound: true,
-            domainFoundLink: {
-              href: link.href,
-              text: link.text,
-              rel: link.rel || undefined,
-              link_type: link_type,
-            },
-          };
-        }
+      if (kind === 'target') {
+        return {
+          allLinksCount: linksData.length,
+          foundLink: {
+            href: link.href,
+            text: link.text,
+            outerHTML: link.outerHTML,
+            matched: true,
+            matchType: 'exact',
+            rel: link.rel || undefined,
+            link_type,
+          },
+        };
       }
 
-      // No match at all (not even domain)
-      this.logger.warn(`No domain match found either`);
-
+      // Links to the client, but not to the landing page entered in the Dashboard
       return {
         allLinksCount: linksData.length,
-        foundLink: {
-          href: '',
-          text: '',
-          outerHTML: '',
-          matched: false,
+        foundLink: notMatched,
+        domainFound: true,
+        domainFoundLink: {
+          href: link.href,
+          text: link.text,
+          rel: link.rel || undefined,
+          link_type,
         },
-        domainFound: false,
       };
 
     } catch (error) {
@@ -592,6 +475,7 @@ export class NetlinkScraperService {
 
             // Get status code from response
             const statusCode = response?.status();
+            const finalUrl = page.url();
 
             // Extract data using the extractData method
             const extractedData = await this.extractData(page, url, landingPage);
@@ -599,6 +483,8 @@ export class NetlinkScraperService {
             return {
               ...extractedData,
               statusCode,
+              finalUrl,
+              redirectedToHomepage: isRedirectToHomepage(url, finalUrl),
             };
           } catch (pageError) {
             // Handle CDP session errors that occur during page operations
@@ -616,8 +502,12 @@ export class NetlinkScraperService {
         // Some sites answer 403 while still serving the article, so a result
         // that already found the link is kept as-is - there is nothing to gain
         // from re-fetching and a worse second read could only lose information.
+        // A redirect to the homepage is the publisher's own answer, not a block,
+        // so it is not worth re-fetching either.
         const foundSomething =
-          scrapedData.foundLink?.matched === true || scrapedData.domainFound === true;
+          scrapedData.foundLink?.matched === true ||
+          scrapedData.domainFound === true ||
+          scrapedData.redirectedToHomepage === true;
 
         if (!foundSomething && this.looksBlocked(scrapedData.statusCode, scrapedData.allLinksCount)) {
           const viaFirecrawl = await this.scrapeViaFirecrawl(url, landingPage);

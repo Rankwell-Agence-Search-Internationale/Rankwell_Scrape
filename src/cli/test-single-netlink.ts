@@ -3,6 +3,13 @@ import { AppModule } from '../app.module';
 import { NetlinkScraperService } from '../modules/paperclub/services/netlink-scraper.service';
 import { LightpandaService } from '../common/lightpanda.service';
 import { DashboardHttpClient } from '../common/dashboard-http-client.service';
+import {
+  normalizeUrl,
+  classifyLink,
+  linkTypeFromRel,
+  pickBestLink,
+  isRedirectToHomepage,
+} from '../modules/paperclub/services/link-matching';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -63,8 +70,10 @@ async function testSingleNetlink() {
       });
 
       const statusCode = response?.status();
+      const finalUrl = page.url();
       console.log('✓ Page loaded successfully');
-      console.log(`✓ HTTP Status Code: ${statusCode}\n`);
+      console.log(`✓ HTTP Status Code: ${statusCode}`);
+      console.log(`✓ Final URL: ${finalUrl}\n`);
 
       // Wait for body
       await page.waitForSelector('body', { timeout: 5000 });
@@ -107,124 +116,40 @@ async function testSingleNetlink() {
       }, null, 2), 'utf-8');
       console.log(`✓ All links saved to: ${linksFilePath}`);
 
-      // Helper function to normalize URL
-      const normalizeUrl = (urlStr: string): string => {
-        try {
-          let normalized = urlStr.toLowerCase().trim();
-          normalized = normalized.replace(/^https?:\/\//, '');
-          normalized = normalized.replace(/^www\./, '');
-          normalized = normalized.replace(/\/$/, '');
-          normalized = normalized.split('?')[0].split('#')[0];
-          return normalized;
-        } catch (error) {
-          return urlStr.toLowerCase().trim();
-        }
-      };
-
-      // Helper function to check URL match (same logic as in scraper service)
-      const checkUrlMatch = (linkHref: string, landingPageUrl: string): { matched: boolean; matchType?: string; reason?: string } => {
-        if (!linkHref || !landingPageUrl) {
-          return { matched: false, reason: 'Empty URL' };
-        }
-
-        const normalizedLink = normalizeUrl(linkHref);
-        const normalizedLanding = normalizeUrl(landingPageUrl);
-
-        // Exact match
-        if (normalizedLink === normalizedLanding) {
-          return { matched: true, matchType: 'exact' };
-        }
-
-        // Link contains the landing page (e.g., landing is a subdirectory)
-        if (normalizedLink.includes(normalizedLanding)) {
-          return { matched: true, matchType: 'domain (link contains landing)' };
-        }
-
-        // Landing contains the link (e.g., link is shorter/partial)
-        if (normalizedLanding.includes(normalizedLink)) {
-          return { matched: true, matchType: 'subdomain (landing contains link)' };
-        }
-
-        // Extract domain and path separately for more flexible matching
-        const getDomain = (urlStr: string) => {
-          return urlStr.split('/')[0];
-        };
-
-        const getPath = (urlStr: string) => {
-          const parts = urlStr.split('/');
-          return parts.slice(1).join('/');
-        };
-
-        const linkDomain = getDomain(normalizedLink);
-        const landingDomain = getDomain(normalizedLanding);
-        const linkPath = getPath(normalizedLink);
-        const landingPath = getPath(normalizedLanding);
-
-        // Same domain check
-        if (linkDomain === landingDomain) {
-          // If domains match, check if paths are similar
-          if (linkPath === landingPath) {
-            return { matched: true, matchType: 'exact (same domain and path)' };
-          }
-          // Check if one path contains the other
-          if (linkPath && landingPath && (linkPath.includes(landingPath) || landingPath.includes(linkPath))) {
-            return { matched: true, matchType: 'partial (same domain, similar path)' };
-          }
-          // If paths don't match but domains do, still consider it a domain match
-          if (linkPath && landingPath) {
-            return { matched: true, matchType: 'domain match (same domain, different path)' };
-          }
-        }
-
-        // Check if link domain is part of landing domain or vice versa
-        if (linkDomain.includes(landingDomain) || landingDomain.includes(linkDomain)) {
-          return { matched: true, matchType: 'subdomain match' };
-        }
-
-        return { matched: false, reason: 'No match found' };
-      };
-
       console.log('\n');
-      let matchFound = false;
-      const matchedLinks: any[] = [];
 
-      // Check each link (only log matches)
-      for (const link of linksData) {
-        const matchResult = checkUrlMatch(link.href, landingPage);
+      // Same rules as the cron scraper (link-matching.ts)
+      const clientLinks = linksData
+        .map(link => ({ link, kind: classifyLink(link.href, landingPage) }))
+        .filter(({ kind }) => kind !== null);
 
-        if (matchResult.matched) {
-          matchFound = true;
-          const linkType = link.rel.toLowerCase().includes('nofollow') ? 'nofollow' : 'dofollow';
-          matchedLinks.push({
-            href: link.href,
-            text: link.text,
-            rel: link.rel || 'none',
-            linkType,
-            matchType: matchResult.matchType,
-          });
-        }
-      }
-
-      // Display matched links
-      if (matchedLinks.length > 0) {
+      if (clientLinks.length > 0) {
         console.log('='.repeat(80));
-        console.log(`✅ FOUND ${matchedLinks.length} MATCHING LINK(S)`);
+        console.log(`FOUND ${clientLinks.length} LINK(S) TO THE CLIENT`);
         console.log('='.repeat(80));
-        matchedLinks.forEach((link, idx) => {
+        clientLinks.forEach(({ link, kind }, idx) => {
           console.log(`\n${idx + 1}. HREF: ${link.href}`);
           console.log(`   TEXT: ${link.text.substring(0, 100)}${link.text.length > 100 ? '...' : ''}`);
-          console.log(`   MATCH TYPE: ${link.matchType}`);
-          console.log(`   LINK TYPE: ${link.linkType}`);
-          console.log(`   REL: ${link.rel}`);
+          console.log(`   MATCH: ${kind === 'target' ? 'target page' : 'other client page'}`);
+          console.log(`   LINK TYPE: ${linkTypeFromRel(link.rel)}`);
+          console.log(`   REL: ${link.rel || 'none'}`);
         });
         console.log('\n');
       }
 
+      const best = pickBestLink(linksData, landingPage);
+      const matchFound = best?.kind === 'target';
+      const redirectedToHomepage = isRedirectToHomepage(url, finalUrl);
+
       console.log('='.repeat(80));
-      if (matchFound) {
-        console.log('✓ LINK MATCH FOUND ON PAGE');
+      if (redirectedToHomepage) {
+        console.log(`✗ ARTICLE REDIRECTED TO THE HOMEPAGE (${finalUrl})`);
+      } else if (matchFound) {
+        console.log('✓ LINK TO THE TARGET PAGE FOUND');
+      } else if (best) {
+        console.log(`~ LINK TO ANOTHER CLIENT PAGE ONLY: ${best.link.href}`);
       } else {
-        console.log('✗ NO LINK MATCH FOUND ON PAGE');
+        console.log('✗ NO LINK TO THE CLIENT FOUND ON PAGE');
         console.log('\nPossible reasons:');
         console.log('  1. The link might be loaded dynamically with JavaScript');
         console.log('  2. The link might be in an iframe');
@@ -239,30 +164,22 @@ async function testSingleNetlink() {
       console.log('API PAYLOAD (what would be sent to /netlink/additionalInfo/upsert)');
       console.log('='.repeat(80));
 
-      // Determine online_status
+      // Determine online_status (same order as NetlinkScraperService)
       let onlineStatus: number;
-      let linkType = 'unknown';
+      const linkType = best && !redirectedToHomepage ? linkTypeFromRel(best.link.rel) : 'unknown';
 
-      if (statusCode === undefined || statusCode >= 500) {
-        // Site not accessible
-        onlineStatus = 3;
+      if (redirectedToHomepage) {
+        onlineStatus = 2;
       } else if (matchFound) {
-        // Exact link found
         onlineStatus = 1;
-        linkType = matchedLinks[0]?.linkType || 'unknown';
+      } else if (best) {
+        onlineStatus = 4;
+      } else if (statusCode === 404 || statusCode === 410) {
+        onlineStatus = 2;
+      } else if (statusCode === undefined || statusCode >= 400) {
+        onlineStatus = 3;
       } else {
-        // Check if domain exists on page
-        const landingDomain = normalizeUrl(landingPage).split('/')[0];
-        const domainFound = linksData.some(link => {
-          const linkDomain = normalizeUrl(link.href).split('/')[0];
-          return linkDomain === landingDomain;
-        });
-
-        if (domainFound) {
-          onlineStatus = 4; // Domain found but not exact URL
-        } else {
-          onlineStatus = 2; // No matching link found
-        }
+        onlineStatus = 2;
       }
 
       const apiPayload = {
