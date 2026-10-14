@@ -35,3 +35,96 @@ describe('NetlinkScraperService online_status', () => {
     expect(info.link_type).toBe('unknown');
   });
 });
+
+describe('NetlinkScraperService confirm before reporting a link gone', () => {
+  const url = 'https://media.fr/article';
+  const landing = 'https://client.fr/page';
+  const target = { href: landing, text: '', outerHTML: '', matched: true, link_type: 'dofollow' };
+  const none = { href: '', text: '', outerHTML: '', matched: false };
+
+  const pageRead = (r: Partial<ScrapedNetlinkData>) => ({ statusCode: 200, allLinksCount: 80, foundLink: none, domainFound: false, ...r });
+  const secondRead = (r: Partial<ScrapedNetlinkData>) =>
+    ({ url, landingPage: landing, scrapedAt: '', success: true, recoveredVia: 'firecrawl', ...pageRead(r) }) as ScrapedNetlinkData;
+
+  function setup(first: Partial<ScrapedNetlinkData>, second: ScrapedNetlinkData | null, firecrawlEnabled = true) {
+    const browser = { withPage: jest.fn().mockResolvedValue(pageRead(first)) };
+    const firecrawl = { isEnabled: () => firecrawlEnabled };
+    const service = new NetlinkScraperService(browser as any, {} as any, {} as any, firecrawl as any);
+    const fallback = jest.spyOn(service as any, 'scrapeViaFirecrawl').mockResolvedValue(second);
+    const run = async () => {
+      const result = await service.scrapeNetlink(url, landing, { retries: 1 });
+      return { result, status: (service as any).onlineStatusOf(result) as number };
+    };
+    return { run, fallback };
+  }
+
+  it('does not re-check a link that was found', async () => {
+    const { run, fallback } = setup({ foundLink: target }, null);
+    expect((await run()).status).toBe(1);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('does not re-check another client page', async () => {
+    const { run, fallback } = setup({ domainFound: true, domainFoundLink: { href: 'https://client.fr/', text: '' } }, null);
+    expect((await run()).status).toBe(4);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('a second read that finds the link wins: the first read was wrong', async () => {
+    const { run } = setup({}, secondRead({ foundLink: target }));
+    const { result, status } = await run();
+    expect(status).toBe(1);
+    expect(result.recoveredVia).toBe('firecrawl');
+  });
+
+  it('a second read that also sees no link confirms it gone', async () => {
+    const { run } = setup({}, secondRead({}));
+    expect((await run()).status).toBe(2);
+  });
+
+  it('a 404 confirmed by the second read stays gone', async () => {
+    const { run } = setup({ statusCode: 404 }, secondRead({ statusCode: 404, allLinksCount: 30 }));
+    expect((await run()).status).toBe(2);
+  });
+
+  it('a 404 the second read cannot fetch becomes not verified', async () => {
+    const { run } = setup({ statusCode: 404 }, null);
+    expect((await run()).status).toBe(3);
+  });
+
+  it('a second read that is itself blocked cannot confirm: not verified', async () => {
+    const { run } = setup({}, secondRead({ statusCode: 403, allLinksCount: 2 }));
+    expect((await run()).status).toBe(3);
+  });
+
+  it('a redirect home confirmed by the second read stays gone', async () => {
+    const { run } = setup(
+      { redirectedToHomepage: true, finalUrl: 'https://media.fr/' },
+      secondRead({ redirectedToHomepage: true, finalUrl: 'https://media.fr/', foundLink: target }),
+    );
+    expect((await run()).status).toBe(2);
+  });
+
+  it('a redirect home is not overturned by a sitewide link when the second read cannot tell where it landed', async () => {
+    const { run } = setup({ redirectedToHomepage: true, finalUrl: 'https://media.fr/' }, secondRead({ foundLink: target }));
+    expect((await run()).status).toBe(2);
+  });
+
+  it('a redirect home served only to our browser is overturned when the second read reaches the article', async () => {
+    const { run } = setup(
+      { redirectedToHomepage: true, finalUrl: 'https://media.fr/' },
+      secondRead({ finalUrl: url, foundLink: target }),
+    );
+    expect((await run()).status).toBe(1);
+  });
+
+  it('keeps the single-read verdict when no second reader is configured', async () => {
+    const { run } = setup({}, null, false);
+    expect((await run()).status).toBe(2);
+  });
+
+  it('a blocked first read the second read cannot fix stays not verified', async () => {
+    const { run } = setup({ statusCode: 403, allLinksCount: 3 }, null);
+    expect((await run()).status).toBe(3);
+  });
+});

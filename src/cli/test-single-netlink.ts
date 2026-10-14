@@ -4,11 +4,13 @@ import { NetlinkScraperService } from '../modules/paperclub/services/netlink-scr
 import { LightpandaService } from '../common/lightpanda.service';
 import { DashboardHttpClient } from '../common/dashboard-http-client.service';
 import {
+  PageLink,
   normalizeUrl,
   classifyLink,
   linkTypeFromRel,
   pickBestLink,
   isRedirectToHomepage,
+  anchorsFromScripts,
 } from '../modules/paperclub/services/link-matching';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -90,7 +92,7 @@ async function testSingleNetlink() {
       console.log(`✓ Page source saved to: ${sourceFilePath}\n`);
 
       // Get all links with detailed information
-      const linksData = await page.evaluate(() => {
+      const linksData: Array<PageLink & { index: number; class: string; id: string }> = await page.evaluate(() => {
         const links = Array.from(document.querySelectorAll('a'));
         return links.map((link, index) => ({
           index: index + 1,
@@ -103,7 +105,24 @@ async function testSingleNetlink() {
         }));
       });
 
-      console.log(`\n✓ Found ${linksData.length} links on the page`);
+      // Anchors inside inline scripts (paywalled article bodies), as the cron reads them
+      const scripts = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('script:not([src])'))
+          .map(s => s.textContent || '')
+          .filter(t => /href/i.test(t)),
+      );
+      const scriptLinks = anchorsFromScripts(scripts, finalUrl);
+      linksData.push(
+        ...scriptLinks.map((link, i) => ({
+          ...link,
+          index: linksData.length + i + 1,
+          class: '',
+          id: '',
+          outerHTML: link.outerHTML.substring(0, 200),
+        })),
+      );
+
+      console.log(`\n✓ Found ${linksData.length - scriptLinks.length} links on the page (+${scriptLinks.length} in page data)`);
 
       // Save all links to JSON file for easier analysis
       const linksFilePath = path.join(logsDir, `links-${timestamp}.json`);
@@ -133,6 +152,7 @@ async function testSingleNetlink() {
           console.log(`   MATCH: ${kind === 'target' ? 'target page' : 'other client page'}`);
           console.log(`   LINK TYPE: ${linkTypeFromRel(link.rel)}`);
           console.log(`   REL: ${link.rel || 'none'}`);
+          if (link.source === 'json') console.log('   FOUND IN: page data (script)');
         });
         console.log('\n');
       }

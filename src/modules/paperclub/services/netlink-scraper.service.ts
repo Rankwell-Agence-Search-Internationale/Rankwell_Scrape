@@ -9,6 +9,7 @@ import {
   linkTypeFromRel,
   isRedirectToHomepage,
   isDeadDomainError,
+  anchorsFromScripts,
 } from './link-matching';
 
 import type { Page } from 'playwright-core';
@@ -57,6 +58,8 @@ export interface ScrapedNetlinkData {
   finalUrl?: string;
   // The article URL now lands on the site's homepage: the article was removed
   redirectedToHomepage?: boolean;
+  // Our read said "gone" but a second fetch could not confirm it
+  unconfirmed?: boolean;
 
 
   [key: string]: any;
@@ -254,6 +257,53 @@ export class NetlinkScraperService {
   }
 
   /**
+   * online_status for a scrape result
+   * 1 = exact link found & accessible (success with matched link)
+   * 2 = link absent: page read without it, page deleted (404/410, redirected
+   *     home) or domain gone
+   * 3 = not verified: blocked, unreachable, or a "gone" read that a second
+   *     fetch could not confirm - says nothing about the link
+   * 4 = links to the client, but not to the landing page entered
+   */
+  private onlineStatusOf(result: ScrapedNetlinkData): number {
+    if (!result.success) {
+      // A domain that no longer resolves is gone for everyone, unlike a
+      // timeout or a block which only means we could not read it.
+      return isDeadDomainError(result.error) ? 2 : 3;
+    }
+    if (result.unconfirmed === true) {
+      return 3;
+    }
+    if (result.redirectedToHomepage === true) {
+      // Checked before the link: a sitewide homepage link to the client is
+      // not the article link that was bought.
+      return 2;
+    }
+    if (result.foundLink?.matched === true) {
+      // Exact matching link found. Checked before the status code because
+      // finding the link proves we read the real article - some publishers
+      // answer 403 to the scraper while still serving the full page.
+      return 1;
+    }
+    if (result.domainFound === true) {
+      return 4;
+    }
+    if (result.statusCode === 404 || result.statusCode === 410) {
+      // The page itself is deleted - the same answer from any network, unlike
+      // a 403 - so the link is gone, not merely unverified.
+      return 2;
+    }
+    if (result.statusCode !== undefined && result.statusCode >= 400) {
+      // page.goto() resolves on 4xx/5xx, so an error page (bot block, rate
+      // limit) would otherwise be parsed as a real page with no matching
+      // link. We cannot claim the link is absent - report it as not verified.
+      return 3;
+    }
+    // Page read, no link to the client on it
+    return 2;
+  }
+
+  /**
    * Transform scraped result to NetlinkAdditionalInfo format
    */
   private transformToAdditionalInfo(result: ScrapedNetlinkData): NetlinkAdditionalInfo | null {
@@ -276,44 +326,7 @@ export class NetlinkScraperService {
       link_type = result.domainFoundLink.link_type;
     }
 
-    // Determine online_status
-    // 1 = exact link found & accessible (success with matched link)
-    // 2 = link absent: page read without it, page deleted (404/410, redirected
-    //     home) or domain gone
-    // 3 = not verified: blocked or unreachable, says nothing about the link
-    // 4 = links to the client, but not to the landing page entered
-    let online_status: number;
-
-    if (!result.success) {
-      // A domain that no longer resolves is gone for everyone, unlike a
-      // timeout or a block which only means we could not read it.
-      online_status = isDeadDomainError(result.error) ? 2 : 3;
-    } else if (result.redirectedToHomepage === true) {
-      // Checked before the link: a sitewide homepage link to the client is
-      // not the article link that was bought.
-      online_status = 2;
-    } else if (result.foundLink?.matched === true) {
-      // Exact matching link found. Checked before the status code because
-      // finding the link proves we read the real article - some publishers
-      // answer 403 to the scraper while still serving the full page.
-      online_status = 1;
-    } else if (result.domainFound === true) {
-      // Site is accessible and domain found but not exact URL
-      online_status = 4;
-    } else if (result.statusCode === 404 || result.statusCode === 410) {
-      // The page itself is deleted - the same answer from any network, unlike
-      // a 403 - so the link is gone, not merely unverified.
-      online_status = 2;
-    } else if (result.statusCode !== undefined && result.statusCode >= 400) {
-      // page.goto() resolves on 4xx/5xx, so an error page (bot block, rate
-      // limit, deleted page) would otherwise be parsed as a real page with no
-      // matching link. Nothing was found and the response was an error, so we
-      // cannot claim the link is absent - report it as not accessible.
-      online_status = 3;
-    } else {
-      // Site is accessible but no matching link or domain found
-      online_status = 2;
-    }
+    const online_status = this.onlineStatusOf(result);
 
     // Build the additional info object
     const additionalInfo: NetlinkAdditionalInfo = {
@@ -379,23 +392,32 @@ export class NetlinkScraperService {
       // Wait a bit for dynamic content to load
       await page.waitForTimeout(2000);
 
-      // Get all links from the page with rel attribute
-      const linksData: PageLink[] = await page.evaluate(() => {
-        const links = Array.from(document.querySelectorAll('a'));
-        return links.map(link => ({
+      // Get all links from the page with rel attribute, plus inline scripts
+      // that may carry the full (paywalled) article as markup
+      const { domLinks, scripts } = await page.evaluate(() => ({
+        domLinks: Array.from(document.querySelectorAll('a')).map(link => ({
           href: link.href,
           text: link.textContent?.trim() || '',
           outerHTML: link.outerHTML,
           rel: link.getAttribute('rel') || '',
-        }));
-      });
+        })),
+        scripts: Array.from(document.querySelectorAll('script:not([src])'))
+          .map(s => s.textContent || '')
+          .filter(t => /href/i.test(t)),
+      }));
 
-      this.logger.debug(`Found ${linksData.length} links on page ${url}`);
+      // allLinksCount stays DOM-only: looksBlocked() relies on it to spot
+      // near-empty challenge pages
+      // Firecrawl HTML is loaded with setContent(), where page.url() is about:blank
+      const baseUrl = page.url().startsWith('http') ? page.url() : url;
+      const linksData: PageLink[] = [...domLinks, ...anchorsFromScripts(scripts, baseUrl)];
+
+      this.logger.debug(`Found ${domLinks.length} links on page ${url} (+${linksData.length - domLinks.length} in scripts)`);
 
       // If no landing page provided, return all links
       if (!landingPage) {
         return {
-          allLinksCount: linksData.length,
+          allLinksCount: domLinks.length,
           foundLink: undefined,
         };
       }
@@ -405,16 +427,16 @@ export class NetlinkScraperService {
 
       if (!best) {
         this.logger.warn(`No link to the client found for landing page: ${landingPage}`);
-        return { allLinksCount: linksData.length, foundLink: notMatched, domainFound: false };
+        return { allLinksCount: domLinks.length, foundLink: notMatched, domainFound: false };
       }
 
       const { kind, link } = best;
       const link_type = linkTypeFromRel(link.rel);
-      this.logger.log(`✓ Found ${kind === 'target' ? 'target' : 'other client page'} link: ${link.href} (${link_type}, rel="${link.rel || 'none'}")`);
+      this.logger.log(`✓ Found ${kind === 'target' ? 'target' : 'other client page'} link: ${link.href} (${link_type}, rel="${link.rel || 'none'}")${link.source === 'json' ? ' [in page data]' : ''}`);
 
       if (kind === 'target') {
         return {
-          allLinksCount: linksData.length,
+          allLinksCount: domLinks.length,
           foundLink: {
             href: link.href,
             text: link.text,
@@ -429,7 +451,7 @@ export class NetlinkScraperService {
 
       // Links to the client, but not to the landing page entered in the Dashboard
       return {
-        allLinksCount: linksData.length,
+        allLinksCount: domLinks.length,
         foundLink: notMatched,
         domainFound: true,
         domainFoundLink: {
@@ -497,37 +519,15 @@ export class NetlinkScraperService {
           }
         });
 
-        // The page loaded, but check whether we actually saw the publisher's
-        // content or an anti-bot wall before trusting a "link not found" result.
-        // Some sites answer 403 while still serving the article, so a result
-        // that already found the link is kept as-is - there is nothing to gain
-        // from re-fetching and a worse second read could only lose information.
-        // A redirect to the homepage is the publisher's own answer, not a block,
-        // so it is not worth re-fetching either.
-        const foundSomething =
-          scrapedData.foundLink?.matched === true ||
-          scrapedData.domainFound === true ||
-          scrapedData.redirectedToHomepage === true;
-
-        if (!foundSomething && this.looksBlocked(scrapedData.statusCode, scrapedData.allLinksCount)) {
-          const viaFirecrawl = await this.scrapeViaFirecrawl(url, landingPage);
-          // Only take the fallback when it actually located the link. If it
-          // comes back empty we cannot tell "link is gone" from "fetched the
-          // wrong thing", so the original blocked result stands and the netlink
-          // is reported as not accessible rather than as removed.
-          if (viaFirecrawl?.foundLink?.matched || viaFirecrawl?.domainFound) {
-            return viaFirecrawl;
-          }
-        }
-
-        // Return successful result
-        return {
+        const firstRead: ScrapedNetlinkData = {
           url,
           landingPage,
           scrapedAt: new Date().toISOString(),
           success: true,
           ...scrapedData,
         };
+
+        return await this.confirmIfNotFound(firstRead);
 
       } catch (error) {
         lastError = error;
@@ -558,6 +558,9 @@ export class NetlinkScraperService {
     // Our browser could not reach the page at all. It may still be reachable
     // from a different network, so try the fallback before declaring it offline.
     const viaFirecrawl = await this.scrapeViaFirecrawl(url, landingPage);
+    if (viaFirecrawl?.redirectedToHomepage) {
+      return viaFirecrawl; // reported as gone, not as the homepage's links
+    }
     if (viaFirecrawl?.foundLink?.matched || viaFirecrawl?.domainFound) {
       return viaFirecrawl;
     }
@@ -571,6 +574,56 @@ export class NetlinkScraperService {
       success: false,
       error: lastError.message,
     };
+  }
+
+  /**
+   * Never report a link as gone, or leave it unverified, on a single read.
+   *
+   * A found link proves we read the real article, so it is kept as-is. Any
+   * other verdict gets a second read from another network and browser
+   * (Firecrawl): paywalls, consent walls, late JavaScript and bot-only 404s or
+   * redirects all make a live link look missing to one reader.
+   */
+  private async confirmIfNotFound(firstRead: ScrapedNetlinkData): Promise<ScrapedNetlinkData> {
+    const status = this.onlineStatusOf(firstRead);
+    if (status === 1 || status === 4) return firstRead;
+
+    // Without a second reader there is nothing to confirm with; keep the
+    // single-read verdict rather than turning every miss into "not verified".
+    if (!this.firecrawl.isEnabled()) return firstRead;
+
+    const { url, landingPage } = firstRead;
+    const secondRead = await this.scrapeViaFirecrawl(url, landingPage);
+
+    // Our browser was redirected home; if the second read cannot say where it
+    // landed, a link it found may be the homepage's sitewide one.
+    const secondLandingUnknown = firstRead.redirectedToHomepage && !secondRead?.finalUrl;
+
+    if (
+      secondRead &&
+      !secondRead.redirectedToHomepage &&
+      !secondLandingUnknown &&
+      (secondRead.foundLink?.matched || secondRead.domainFound)
+    ) {
+      this.logger.log(`Second read found the link on ${url}: first read was wrong`);
+      return secondRead;
+    }
+
+    if (status !== 2) return firstRead;
+
+    // The second read confirms "gone" only if it really saw the page: the
+    // same homepage redirect, or a readable page without the link. A blocked
+    // or failed second read proves nothing.
+    const confirmed =
+      secondRead !== null &&
+      (secondRead.redirectedToHomepage === true ||
+        !this.looksBlocked(secondRead.statusCode, secondRead.allLinksCount));
+
+    if (!confirmed) {
+      this.logger.warn(`Could not confirm ${url} is gone - reporting it as not verified`);
+      return { ...firstRead, unconfirmed: true };
+    }
+    return firstRead;
   }
 
   /**
@@ -637,6 +690,8 @@ export class NetlinkScraperService {
         success: true,
         ...extracted,
         statusCode: fetched.statusCode,
+        finalUrl: fetched.finalUrl,
+        redirectedToHomepage: isRedirectToHomepage(url, fetched.finalUrl),
         recoveredVia: 'firecrawl',
       };
     } catch (error) {

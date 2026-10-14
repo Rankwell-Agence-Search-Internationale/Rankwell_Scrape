@@ -10,6 +10,8 @@ export interface PageLink {
   text: string;
   outerHTML: string;
   rel: string;
+  // 'json' when the anchor was found in a script payload rather than the DOM
+  source?: 'json';
 }
 
 /** 'target': the landing page entered in the Dashboard. 'other_page': any other page of the client. */
@@ -119,4 +121,60 @@ export function isRedirectToHomepage(requestedUrl: string, finalUrl?: string): b
 /** The domain no longer resolves: the site is gone from every network, not just blocking us. */
 export function isDeadDomainError(message?: string): boolean {
   return !!message && /ERR_NAME_NOT_RESOLVED|ENOTFOUND/.test(message);
+}
+
+/** Undo one level of JSON/JS string escaping around markup. */
+function unescapeOnce(text: string): string {
+  return text
+    .replace(/\\u003c/gi, '<')
+    .replace(/\\u003e/gi, '>')
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/');
+}
+
+const ANCHOR_TAG = /<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+const REL_ATTR = /\brel\s*=\s*["']([^"']*)["']/i;
+
+/**
+ * Anchors written inside inline script payloads.
+ *
+ * Paywalled publishers ship the full article - including the bought link - as
+ * HTML inside a JSON blob and only render the teaser, so the DOM alone reports
+ * the link as missing. Only real <a> tags count: a bare client URL in JSON
+ * (schema.org data, tracking) is not proof that the article links to it.
+ */
+export function anchorsFromScripts(scripts: string[], baseUrl: string): PageLink[] {
+  const links: PageLink[] = [];
+
+  for (const script of scripts) {
+    // Markup can be escaped several times (JSON inside a JSON string)
+    let text = script;
+    for (let i = 0; i < 3; i++) {
+      const next = unescapeOnce(text);
+      if (next === text) break;
+      text = next;
+    }
+
+    for (const match of text.matchAll(ANCHOR_TAG)) {
+      const [outerHTML, rawHref, inner] = match;
+      let href: string;
+      try {
+        href = new URL(rawHref.replace(/&amp;/g, '&'), baseUrl).href;
+      } catch {
+        continue;
+      }
+      links.push({
+        href,
+        text: inner.replace(/<[^>]*>/g, '').trim(),
+        outerHTML,
+        rel: outerHTML.match(REL_ATTR)?.[1] ?? '',
+        source: 'json',
+      });
+    }
+  }
+
+  return links;
 }

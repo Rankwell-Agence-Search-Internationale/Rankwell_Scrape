@@ -42,7 +42,7 @@ export class FirecrawlService {
    * Fetch a URL's raw HTML through Firecrawl.
    * Returns null when disabled or when Firecrawl also fails to retrieve it.
    */
-  async fetchRawHtml(url: string): Promise<{ html: string; statusCode?: number } | null> {
+  async fetchRawHtml(url: string): Promise<{ html: string; statusCode?: number; finalUrl?: string } | null> {
     if (!this.apiKey) return null;
 
     try {
@@ -61,6 +61,8 @@ export class FirecrawlService {
       return {
         html: body.data.rawHtml,
         statusCode: body.data.metadata?.statusCode,
+        // Address after redirects, when Firecrawl reports it
+        finalUrl: body.data.metadata?.url,
       };
     } catch (error) {
       const status = error.response?.status;

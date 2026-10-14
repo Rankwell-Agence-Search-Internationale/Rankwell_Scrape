@@ -5,6 +5,7 @@ import {
   pickBestLink,
   isRedirectToHomepage,
   isDeadDomainError,
+  anchorsFromScripts,
 } from './link-matching';
 
 describe('normalizeUrl', () => {
@@ -120,5 +121,45 @@ describe('isDeadDomainError', () => {
     [undefined, false],
   ])('%s', (message, expected) => {
     expect(isDeadDomainError(message)).toBe(expected);
+  });
+});
+
+describe('anchorsFromScripts', () => {
+  const base = 'https://media.fr/article';
+
+  it('finds an anchor in an article body stored as a JSON string (paywalled sites)', () => {
+    const script = JSON.stringify({
+      article: { body: '<p>Voir <a href="https://client.fr/page" rel="noopener">le site</a>.</p>' },
+    });
+    expect(anchorsFromScripts([script], base)).toEqual([
+      { href: 'https://client.fr/page', text: 'le site', outerHTML: expect.any(String), rel: 'noopener', source: 'json' },
+    ]);
+  });
+
+  it('decodes unicode-escaped markup (Next.js / Nuxt payloads)', () => {
+    const script = '{"html":"\\u003ca href=\\u0022https:\\u002F\\u002Fclient.fr\\u002Fpage\\u0022 rel=\\u0022nofollow\\u0022\\u003eici\\u003c\\u002Fa\\u003e"}';
+    const [link] = anchorsFromScripts([script], base);
+    expect(link.href).toBe('https://client.fr/page');
+    expect(link.rel).toBe('nofollow');
+  });
+
+  it('decodes markup escaped twice (JSON inside a JSON string)', () => {
+    const inner = JSON.stringify({ body: '<a href="https://client.fr/page">x</a>' });
+    const [link] = anchorsFromScripts([JSON.stringify({ state: inner })], base);
+    expect(link.href).toBe('https://client.fr/page');
+  });
+
+  it('resolves relative hrefs and decodes &amp;', () => {
+    const script = '{"b":"<a href=\\"/autre?a=1&amp;b=2\\">x</a>"}';
+    expect(anchorsFromScripts([script], base)[0].href).toBe('https://media.fr/autre?a=1&b=2');
+  });
+
+  it('ignores scripts without markup and bare URLs (not proof of a link)', () => {
+    expect(anchorsFromScripts(['{"url":"https://client.fr/page"}', 'var a = 1;'], base)).toEqual([]);
+  });
+
+  it('keeps the rel of a sponsored anchor', () => {
+    const script = '{"b":"<a rel=\\"sponsored\\" href=\\"https://client.fr/page\\">x</a>"}';
+    expect(linkTypeFromRel(anchorsFromScripts([script], base)[0].rel)).toBe('nofollow');
   });
 });
