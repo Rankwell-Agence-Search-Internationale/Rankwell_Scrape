@@ -15,6 +15,7 @@ export class DatabaseService {
   private readonly logger = new Logger(DatabaseService.name);
   private readonly backendUrl: string;
   private readonly timeout: number;
+  private readonly apiKey: string | undefined;
 
   constructor(
     private readonly httpService: HttpService,
@@ -28,6 +29,9 @@ export class DatabaseService {
       'BACKEND_API_TIMEOUT',
       30000,
     );
+    this.apiKey =
+      this.configService.get<string>('DASHBOARD_API_KEY') ||
+      this.configService.get<string>('SCRAPING_RUNS_API_KEY');
   }
 
   /**
@@ -52,6 +56,8 @@ export class DatabaseService {
           timeout: this.timeout,
           headers: {
             'Content-Type': 'application/json',
+            // The Dashboard rejects writes without a key (401)
+            ...(this.apiKey ? { 'X-Api-Key': this.apiKey } : {}),
           },
         }),
       );
@@ -95,6 +101,7 @@ export class DatabaseService {
         this.httpService.delete(url, {
           params: { category, provider },
           timeout: this.timeout,
+          headers: this.apiKey ? { 'X-Api-Key': this.apiKey } : {},
         }),
       );
 

@@ -49,10 +49,24 @@ export class DashboardHttpClient {
    * Setup request and response interceptors
    */
   private setupInterceptors(): void {
+    // The Dashboard rejects every write without a key (401 "Missing
+    // credentials"). It accepts its shared SCRAPING_API_KEY, which the scraper
+    // already holds as SCRAPING_RUNS_API_KEY for run reports.
+    const apiKey =
+      this.configService.get<string>('DASHBOARD_API_KEY') ||
+      this.configService.get<string>('SCRAPING_RUNS_API_KEY');
+    const dashboardHost = new URL(this.baseURL).host;
+
     // Request interceptor
     this.axiosInstance.interceptors.request.use(
       (config) => {
         this.logger.debug(`${config.method?.toUpperCase()} ${config.url}`);
+
+        // This axios instance is shared with other clients (Paper.club...),
+        // so the key is attached per request and only for the Dashboard host.
+        if (apiKey && new URL(config.url ?? '', this.baseURL).host === dashboardHost) {
+          config.headers.set('X-Api-Key', apiKey);
+        }
         return config;
       },
       (error) => {
