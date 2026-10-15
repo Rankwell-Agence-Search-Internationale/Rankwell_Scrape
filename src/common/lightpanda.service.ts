@@ -8,6 +8,35 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 chromium.use(StealthPlugin());
 
 /**
+ * playwright-extra's page shim attaches CDP listeners with a detached promise:
+ *
+ *   getPageCDPSession(page).then(session => session.on(event, listener))
+ *
+ * with no .catch(). Closing a page while that is still in flight rejects it
+ * with nothing awaiting, which crashes the process on an unhandled rejection
+ * even though every close() we make is already guarded. Long runs close
+ * thousands of pages, so this is routine rather than exceptional: a nightly
+ * scrape died on it after ~40 URLs.
+ *
+ * Swallow only that teardown race — anything else still crashes, as it should.
+ */
+const CLOSED_TARGET = /Target (page|browser) has been closed|Target page, context or browser has been closed|cdpSession/;
+let teardownGuardInstalled = false;
+
+function installTeardownGuard(logger: Logger) {
+  if (teardownGuardInstalled) return;
+  teardownGuardInstalled = true;
+  process.on('unhandledRejection', (reason: any) => {
+    const message = reason?.message ?? String(reason);
+    if (CLOSED_TARGET.test(message)) {
+      logger.debug(`Ignored browser teardown rejection: ${message.split('\n')[0]}`);
+      return;
+    }
+    throw reason;
+  });
+}
+
+/**
  * Browser Service (Playwright Chromium with Advanced Stealth)
  *
  * Provides a local Playwright Chromium browser instance with advanced anti-bot detection bypassing.
@@ -32,6 +61,7 @@ export class LightpandaService implements OnModuleDestroy {
     // Configuration for Playwright browser
     const headlessEnv = this.configService.get<string>('BROWSER_HEADLESS', 'true');
     this.headless = headlessEnv === 'true' || headlessEnv === '1';
+    installTeardownGuard(this.logger);
   }
 
   /**
