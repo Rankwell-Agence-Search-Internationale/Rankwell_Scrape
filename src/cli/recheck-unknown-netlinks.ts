@@ -95,6 +95,10 @@ async function main() {
   } finally {
     await app.close();
   }
+  // The stealth plugin leaves CDP handles that keep the event loop alive, so
+  // the process hangs after the summary without an explicit exit — the other
+  // scrape:* CLIs do the same.
+  process.exit(process.exitCode ?? 0);
 }
 
 /**
