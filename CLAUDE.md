@@ -58,7 +58,7 @@ PM2 for production: `npm run pm2:start` (config in `ecosystem.config.js`, timezo
 
 **Data flow**: Scrape platform API/website → Transform to DTO → Calculate BQS → POST to Dashboard API (`/backlinks/add`, `/netlink/batchUpsert`, etc.) and/or save to `data/` or `scraped-data/` as JSON.
 
-**Cron jobs** (in `main.ts`, via `node-cron`; `ENABLE_CRON` is read by the unused `cron.service.ts` and does not gate these): Netlink scraper daily at 23:00, checking an even share of all netlinks (`dailyShare` in `common/calendar.ts`) so each is checked once a month. Monthly sequence 5 days before month end at 02:00: Paper.club then RocketLinks (spawned as child processes from `dist/cli/`), then DomDetailer in-process. Every job reports one record to the Dashboard's `POST /scraping/runs` via `ScrapingRunReporterService`.
+**Cron jobs** (in `main.ts`, via `node-cron`; `ENABLE_CRON` is read by the unused `cron.service.ts` and does not gate these): Netlink scraper daily at 23:00, checking a rotating batch of `NETLINK_DAILY_BATCH` (default 200) netlinks (`dailyBatch` in `common/calendar.ts`), restricted to those created on or after `NETLINK_MIN_DATE` (default 2025-01-01, filtered on `creation_date`). Monthly sequence 5 days before month end at 02:00: Paper.club then RocketLinks (spawned as child processes from `dist/cli/`), then DomDetailer in-process. Every job reports one record to the Dashboard's `POST /scraping/runs` via `ScrapingRunReporterService`.
 
 ## TypeScript Path Aliases
 

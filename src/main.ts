@@ -9,7 +9,9 @@ import { NetlinkService } from './modules/paperclub/services/netlink.service';
 import { DomDetailerService } from './common/domdetailer.service';
 import { DashboardHttpClient } from './common/dashboard-http-client.service';
 import { ScrapingRunReporterService } from './common/scraping-run-reporter.service';
-import { daysUntilEndOfMonth, dailyShare } from './common/calendar';
+import { daysUntilEndOfMonth, dailyBatch } from './common/calendar';
+import { isWithinWindow, parseMinDate } from './common/netlink-window';
+import { ConfigService } from '@nestjs/config';
 
 const logger = new Logger('Main');
 
@@ -32,7 +34,7 @@ async function bootstrap() {
 /**
  * Run the netlink scraper cron job
  *
- * The full list is spread evenly over the month (dailyShare), so every netlink
+ * A fixed batch rotates through the list each day (dailyBatch), so every netlink
  * is checked once a month at ~65/day. It is ordered oldest id first: the API
  * returns newest first, and new purchases would otherwise shift every link
  * across day boundaries, checking some twice and skipping others.
@@ -51,13 +53,20 @@ async function runNetlinkScraperJob() {
   let results: ScrapedNetlinkData[] = [];
 
   try {
-    const all = await netlinkService.fetchAllNetlinks({ limit: 200 });
+    const fetched = await netlinkService.fetchAllNetlinks({ limit: 200 });
+    // Filter before the daily share so the remaining netlinks still spread
+    // evenly over the month instead of leaving the early days near-empty.
+    const minDate = parseMinDate(app.get(ConfigService).get<string>('NETLINK_MIN_DATE'));
+    const all = fetched.filter(n => isWithinWindow(n, minDate));
     all.sort((a, b) => Number(a.id) - Number(b.id));
 
-    const { start, end } = dailyShare(all.length, today);
-    const netlinks = all.slice(start, end);
+    logger.log(`${all.length}/${fetched.length} netlinks created on or after ${minDate.toISOString().slice(0, 10)}`);
 
-    logger.log(`Today's share: netlinks ${start + 1}-${end} of ${all.length} (${netlinks.length}). Starting scraping...`);
+    const batchSize = Number(app.get(ConfigService).get<string>('NETLINK_DAILY_BATCH', '200')) || 200;
+    const indices = dailyBatch(all.length, batchSize, today);
+    const netlinks = indices.map(i => all[i]);
+
+    logger.log(`Today's batch: ${netlinks.length} of ${all.length} netlinks (full cycle every ${Math.ceil(all.length / batchSize)} days). Starting scraping...`);
 
     // Scrape them
     results = await scraperService.scrapeNetlinks(netlinks, {

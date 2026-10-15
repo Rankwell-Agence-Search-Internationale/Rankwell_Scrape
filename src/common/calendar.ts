@@ -10,16 +10,27 @@ export function daysUntilEndOfMonth(date: Date = new Date()): number {
 }
 
 /**
- * The slice [start, end) of a `total`-item list that `date` is responsible for
- * when the list is spread evenly over its month. Every index falls in exactly
- * one day of any month length, and daily sizes differ by at most one, so a
- * list checked this way is fully covered each month without idle days.
+ * The `size` items that `date` is responsible for when a list is worked
+ * through at a fixed rate, continuing where the previous day left off and
+ * wrapping to the front when it reaches the end.
+ *
+ * Indexing by days-since-epoch rather than day-of-month keeps the rotation
+ * continuous across month boundaries, so no netlink is skipped or checked
+ * twice because a month was short.
+ *
+ * The window wraps, so it is returned as explicit indices rather than a
+ * [start, end) range: `[0, 50)` plus `[1100, 1164)` cannot be expressed as one
+ * slice.
  */
-export function dailyShare(total: number, date: Date = new Date()): { start: number; end: number } {
-  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-  const day = date.getDate();
-  return {
-    start: Math.floor(((day - 1) * total) / daysInMonth),
-    end: Math.floor((day * total) / daysInMonth),
-  };
+export function dailyBatch(
+  total: number,
+  size: number,
+  date: Date = new Date(),
+): number[] {
+  if (total <= 0 || size <= 0) return [];
+  if (size >= total) return Array.from({ length: total }, (_, i) => i);
+
+  const dayIndex = Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000);
+  const start = ((dayIndex * size) % total + total) % total;
+  return Array.from({ length: size }, (_, i) => (start + i) % total);
 }
